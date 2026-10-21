@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { kliko, springs } from "../motion/tokens";
 import { SmartSlider } from "./SmartSlider";
+import { VoicePicker } from "./VoicePicker";
 import type { AdjustmentValues } from "../engine/photoEngine";
+import { speak, stopSpeaking } from "../engine/voiceEngine";
 
 type KlikoState = "idle" | "listening" | "panel";
 
@@ -46,6 +48,11 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
   // sempre caia em "nada reconhecido". O ref resolve isso por ser
   // mutavel e lido com o valor atual, nunca uma copia antiga.
   const transcriptRef = useRef("");
+  // Guarda o estado de ajustes de ANTES do ultimo comando de voz, para
+  // que "Cancelar" possa reverter so esse comando — diferente de
+  // "Redefinir tudo", que zera todos os sliders.
+  const previousAdjustmentsRef = useRef<AdjustmentValues>(adjustments);
+  const [voiceURI, setVoiceURI] = useState<string | null>(null);
 
   const speechSupported =
     typeof window !== "undefined" &&
@@ -53,6 +60,7 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
 
   function startListening() {
     if (!hasPhoto) return;
+    stopSpeaking(); // nao deixa a Kliko falando por cima de um novo pedido
     // Evita duas instancias de reconhecimento rodando ao mesmo tempo
     // se o usuario tocar o orb de novo enquanto ja esta ouvindo.
     if (state === "listening") {
@@ -115,32 +123,73 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
     }, 140);
   }
 
+  /**
+   * O fluxo completo pedido: reconhece -> interpreta -> previa real na
+   * foto (via onChange, que ja redesenha o canvas) -> responde por voz
+   * -> pede confirmacao. O usuario confirma (Concluir), ajusta a mao
+   * nos sliders (o painel ja fica aberto com eles), ou cancela
+   * (reverte so este comando, sem mexer no que ja estava antes).
+   */
   function applyVoiceCommand(text: string) {
     const lower = text.toLowerCase();
+    const before = adjustments;
     const next = { ...adjustments };
-    let what = "nada reconhecido";
+    let what: string | null = null;
+    let spoken = "";
+
     if (lower.includes("ilumin") || lower.includes("clar") || lower.includes("expos")) {
       next.exposicao = Math.min(100, adjustments.exposicao + 25);
-      what = "aumentar a exposicao";
+      what = "aumentar a exposição";
+      spoken = "Aumentei a exposição. Quer confirmar, ajustar ou cancelar?";
     } else if (lower.includes("escur")) {
       next.exposicao = Math.max(-100, adjustments.exposicao - 25);
-      what = "reduzir a exposicao";
+      what = "reduzir a exposição";
+      spoken = "Reduzi a exposição. Quer confirmar, ajustar ou cancelar?";
     } else if (lower.includes("contraste")) {
       next.contraste = Math.min(100, adjustments.contraste + 20);
       what = "aumentar o contraste";
+      spoken = "Aumentei o contraste. Quer confirmar, ajustar ou cancelar?";
     } else if (lower.includes("satura") || lower.includes("cor")) {
       next.saturacao = Math.min(100, adjustments.saturacao + 20);
-      what = "aumentar a saturacao";
+      what = "aumentar a saturação";
+      spoken = "Aumentei a saturação. Quer confirmar, ajustar ou cancelar?";
     } else if (lower.includes("quente")) {
       next.temperatura = Math.min(100, adjustments.temperatura + 25);
       what = "esquentar a temperatura";
+      spoken = "Esquentei a temperatura da foto. Quer confirmar, ajustar ou cancelar?";
     } else if (lower.includes("fri")) {
       next.temperatura = Math.max(-100, adjustments.temperatura - 25);
       what = "esfriar a temperatura";
+      spoken = "Esfriei a temperatura da foto. Quer confirmar, ajustar ou cancelar?";
     }
+
+    if (!what) {
+      // Nada reconhecido: nao mexe na foto, nao abre o painel, so avisa
+      // e volta a ouvir — evita um painel confuso com "nada aplicado".
+      setState("idle");
+      speak("Desculpa, não entendi o pedido. Pode repetir?");
+      return;
+    }
+
+    previousAdjustmentsRef.current = before;
     onChange(next);
     setSummary(`Entendi: ${what}. Veja o resultado e confirme abaixo.`);
     setState("panel");
+    speak(spoken, voiceURI);
+  }
+
+  function handleCancel() {
+    stopSpeaking();
+    onChange(previousAdjustmentsRef.current);
+    setSummary(null);
+    setState("idle");
+  }
+
+  function handleConfirm() {
+    stopSpeaking();
+    onConfirm();
+    setState("idle");
+    setSummary(null);
   }
 
   useEffect(() => {
@@ -174,8 +223,10 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <span style={{ fontWeight: 600, fontSize: 15, color: kliko.text }}>Mini Kliko</span>
-              <button aria-label="Fechar" onClick={() => setState("idle")} style={closeBtnStyle}>×</button>
+              <button aria-label="Fechar" onClick={() => { stopSpeaking(); setState("idle"); }} style={closeBtnStyle}>×</button>
             </div>
+
+            <VoicePicker selectedURI={voiceURI} onSelect={setVoiceURI} />
 
             {summary && (
               <motion.p
@@ -194,26 +245,23 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
             <SmartSlider label="Temperatura" value={adjustments.temperatura} onChange={(v) => onChange({ ...adjustments, temperatura: v })} />
 
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-              <button
-                onClick={() => {
-                  onUndo();
-                  setSummary(null);
-                }}
-                style={secondaryBtnStyle}
-              >
-                Desfazer
+              <button onClick={handleCancel} style={secondaryBtnStyle}>
+                Cancelar
               </button>
-              <button
-                onClick={() => {
-                  onConfirm();
-                  setState("idle");
-                  setSummary(null);
-                }}
-                style={primaryBtnStyle}
-              >
-                Concluir
+              <button onClick={handleConfirm} style={primaryBtnStyle}>
+                Confirmar
               </button>
             </div>
+
+            <button
+              onClick={() => {
+                onUndo();
+                setSummary(null);
+              }}
+              style={resetLinkStyle}
+            >
+              Redefinir todos os ajustes
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -322,6 +370,20 @@ const secondaryBtnStyle: CSSProperties = {
   color: kliko.textMuted,
   fontWeight: 600,
   fontSize: 14,
+  cursor: "pointer",
+};
+
+const resetLinkStyle: CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "center",
+  marginTop: 10,
+  padding: "4px 0",
+  border: "none",
+  background: "none",
+  color: kliko.textMuted,
+  fontSize: 11.5,
+  textDecoration: "underline",
   cursor: "pointer",
 };
 
