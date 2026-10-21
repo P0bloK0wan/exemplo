@@ -34,16 +34,54 @@ uniform vec2 u_resolution;
 uniform vec3 u_lobes[4]; // xy = centro (-1..1), z = raio
 uniform float u_glow;
 
+// Campo de um único "metaball" no estilo Wyvill/soft-object: limitado
+// a [0,1], SEM singularidade no centro (ao contrário de um campo
+// 1/dist² puro, cujo pico infinito no centro de cada lóbulo fazia
+// qualquer detector de curvatura baseado em derivadas (Laplaciano)
+// disparar erroneamente ali, em vez de nos vales entre lóbulos).
+float lobeField(vec2 p, vec2 c, float r) {
+  float d2 = dot(p - c, p - c);
+  float r2 = r * r;
+  if (d2 >= r2) return 0.0;
+  float t = 1.0 - d2 / r2;
+  return t * t * t;
+}
+
+// IMPORTANTE (GLSL ES 1.00 / WebGL1): o raio de influência de cada
+// lóbulo (raio "visual" × 1.4, para permitir a fusão a distância) é
+// calculado INLINE dentro de cada laço abaixo, em vez de numa função
+// auxiliar separada tipo \`lobeInfluence(int i)\`. Passar o índice do
+// laço como parâmetro de função e indexar \`u_lobes[i]\` LÁ DENTRO
+// quebra em compiladores GLSL ES 1.00 estritos (confirmado com o
+// SwiftShader usado pelo Chromium headless, e o mesmo tipo de
+// restrição existe no ANGLE que a Safari do iOS usa por baixo) — a
+// especificação só garante indexação dinâmica de arrays quando o
+// índice é literalmente a variável do \`for\` usada na MESMA expressão
+// sintática do laço, não repassada por uma chamada de função. Quando
+// isso falhava, o shader não compilava, \`createSculptureGLRenderer\`
+// devolvia \`null\`, e o componente caía pro fallback SVG silenciosamente
+// — foi exatamente o que aconteceu aqui antes deste comentário existir.
 float field(vec2 p) {
   float f = 0.0;
   for (int i = 0; i < 4; i++) {
-    vec2 c = u_lobes[i].xy;
-    float r = u_lobes[i].z;
-    vec2 d = p - c;
-    float dist2 = dot(d, d) + 0.0008;
-    f += (r * r) / dist2;
+    f += lobeField(p, u_lobes[i].xy, u_lobes[i].z * 1.4);
   }
   return f;
+}
+
+// Maior contribuição de UM ÚNICO lóbulo neste ponto — comparado à
+// soma de todos (field()), a diferença entre os dois é exatamente o
+// quanto um SEGUNDO (ou terceiro) lóbulo está empilhado ali por cima
+// do dominante. Essa "sobra" é zero onde só um lóbulo importa (então
+// nenhuma sombra) e cresce exatamente nas selas de verdade entre dois
+// lóbulos — um sinal direto de sobreposição geométrica, mais robusto
+// que inferir por derivadas numéricas do campo.
+float maxLobeField(vec2 p) {
+  float m = 0.0;
+  for (int i = 0; i < 4; i++) {
+    m = max(m, lobeField(p, u_lobes[i].xy, u_lobes[i].z * 1.4));
+  }
+  return m;
 }
 
 void main() {
@@ -53,31 +91,52 @@ void main() {
   float aspect = res.x / res.y;
   if (aspect > 1.0) { p.x *= aspect; } else { p.y /= aspect; }
 
-  float threshold = 1.0;
+  // Limiar mais baixo = silhueta visível maior em relação ao raio
+  // nominal de cada lóbulo — ajustado para a Variante B ocupar
+  // proporcionalmente o mesmo espaço do quadro que a Variante A (SVG),
+  // já que as duas precisam "parecer o mesmo objeto" em qualquer
+  // tamanho de exibição, não só na mesma geometria normalizada.
+  float threshold = 0.32;
   float f = field(p);
-  float alpha = smoothstep(threshold - 0.09, threshold + 0.09, f);
+  float alpha = smoothstep(threshold - 0.05, threshold + 0.05, f);
   if (alpha < 0.004) { discard; }
 
-  float eps = 0.015;
+  float eps = 0.012;
   float fx = field(p + vec2(eps, 0.0)) - field(p - vec2(eps, 0.0));
   float fy = field(p + vec2(0.0, eps)) - field(p - vec2(0.0, eps));
-  vec3 normal = normalize(vec3(-fx, -fy, 0.65));
+  vec3 normal = normalize(vec3(-fx, -fy, 0.6));
 
-  float lap = field(p + vec2(eps, 0.0)) + field(p - vec2(eps, 0.0))
-            + field(p + vec2(0.0, eps)) + field(p - vec2(0.0, eps)) - 4.0 * f;
-  float crease = clamp(smoothstep(0.0, -0.55, lap), 0.0, 1.0);
+  // Sombra de interseção pela "sobra" de cobertura (ver maxLobeField
+  // acima) — quase preta exatamente onde dois lóbulos se sobrepõem de
+  // verdade, perto do zero em qualquer região dominada por um só.
+  // Faixa alta de propósito: com o raio de influência de 1.4×, a
+  // "sobra" cresce rápido perto do centro de qualquer sobreposição —
+  // sem uma faixa larga aqui, a sombra tomava a metade do corpo em vez
+  // de ficar concentrada só na linha da junção, como na referência.
+  float excess = f - maxLobeField(p);
+  float crease = clamp(smoothstep(0.1, 0.62, excess), 0.0, 1.0);
 
   vec3 lightDir = normalize(vec3(-0.5, 0.6, 0.7));
   float diffuse = max(dot(normal, lightDir), 0.0);
-  float fresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.4);
+  float fresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.1);
 
-  vec3 bodyColor = vec3(0.92, 0.95, 0.99);
-  vec3 blueTint = vec3(0.31, 0.56, 0.97);
+  // Leitosa: base quase branca, nunca cinza neutro — só esfria um pouco na sombra.
+  vec3 bodyColor = vec3(0.90, 0.94, 0.99);
+  vec3 blueTint = vec3(0.30, 0.55, 0.97);
 
-  vec3 color = mix(bodyColor, vec3(1.0), diffuse * 0.55);
-  color += fresnel * (0.35 + u_glow * 0.5);
-  color = mix(color, blueTint, 0.07 + fresnel * 0.08);
-  color *= mix(1.0, 0.5, crease);
+  vec3 color = mix(bodyColor, vec3(1.0), diffuse * 0.5);
+  // Brilho de borda mais forte, perto do branco estourado da referência.
+  color += fresnel * (0.55 + u_glow * 0.55);
+  // Ponto de brilho estreito e intenso (vidro/porcelana) — sem isso a
+  // superfície fica só "clara", nunca com aquele brilho quase estourado
+  // que a referência tem na zona mais iluminada.
+  float specular = pow(diffuse, 9.0);
+  color += specular * 0.6;
+  color = mix(color, blueTint, 0.06 + fresnel * 0.07);
+  // Interseção escurece bastante, mas não a um preto chapado sem
+  // variação — a referência mantém alguma leitura de forma mesmo na
+  // sombra mais funda.
+  color *= mix(1.0, 0.22, crease);
 
   gl_FragColor = vec4(color, alpha);
 }

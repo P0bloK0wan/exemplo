@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { springs } from "../../motion/tokens";
 import type { SculptureState, ReactiveInput } from "../../engine/sculptureEngine";
@@ -11,6 +12,8 @@ interface KlikoSculptureHybridProps {
   expanded: boolean;
   compactSize?: number;
   expandedSize?: number;
+  /** Instrumentação opcional para o Laboratório, repassada de cada sub-variante com sua origem identificada. */
+  onFrameStats?: (stats: { source: "svg" | "gl"; renderMs: number }) => void;
 }
 
 /**
@@ -37,6 +40,14 @@ interface KlikoSculptureHybridProps {
  *   invólucro externo, com a MESMA mola (`springs.gentle`, já usada
  *   no App para a transição orb → painel) coordenando geometria e
  *   opacidade como um só gesto.
+ * - A camada WebGL só fica ATIVA (de verdade renderizando quadros,
+ *   não só visível) enquanto está expandida OU em transição — assim
+ *   que o crossfade termina e a escultura volta a ficar compacta
+ *   (SVG visível, WebGL com opacidade 0), o laço da Variante B é
+ *   PARADO (`active={false}` em `KlikoSculptureGL`) para não gastar
+ *   GPU à toa atrás de uma camada invisível. O fim da transição é
+ *   detectado pelo próprio `onAnimationComplete` do Motion, não por
+ *   um temporizador arbitrário.
  */
 export function KlikoSculptureHybrid({
   state,
@@ -44,14 +55,27 @@ export function KlikoSculptureHybrid({
   expanded,
   compactSize = 72,
   expandedSize = 220,
+  onFrameStats,
 }: KlikoSculptureHybridProps) {
   const compactScale = compactSize / expandedSize;
+  const [transitioning, setTransitioning] = useState(false);
+  const prevExpandedRef = useRef(expanded);
+
+  useEffect(() => {
+    if (prevExpandedRef.current !== expanded) {
+      setTransitioning(true);
+      prevExpandedRef.current = expanded;
+    }
+  }, [expanded]);
+
+  const glActive = expanded || transitioning;
 
   return (
     <motion.div
       layout
       animate={{ scale: expanded ? 1 : compactScale }}
       transition={springs.gentle}
+      onAnimationComplete={() => setTransitioning(false)}
       style={{
         width: expandedSize,
         height: expandedSize,
@@ -64,14 +88,25 @@ export function KlikoSculptureHybrid({
         transition={springs.gentle}
         style={{ position: "absolute", inset: 0 }}
       >
-        <KlikoSculptureSVG state={state} size={expandedSize} reactive={reactive} />
+        <KlikoSculptureSVG
+          state={state}
+          size={expandedSize}
+          reactive={reactive}
+          onFrameStats={onFrameStats ? (s) => onFrameStats({ source: "svg", renderMs: s.renderMs }) : undefined}
+        />
       </motion.div>
       <motion.div
         animate={{ opacity: expanded ? 1 : 0 }}
         transition={springs.gentle}
         style={{ position: "absolute", inset: 0 }}
       >
-        <KlikoSculptureGL state={state} size={expandedSize} reactive={reactive} />
+        <KlikoSculptureGL
+          state={state}
+          size={expandedSize}
+          reactive={reactive}
+          active={glActive}
+          onFrameStats={onFrameStats ? (s) => onFrameStats({ source: "gl", renderMs: s.renderMs }) : undefined}
+        />
       </motion.div>
     </motion.div>
   );

@@ -8,6 +8,7 @@ import { KlikoSculptureGL } from "./KlikoSculptureGL";
 import { KlikoSculptureHybrid } from "./KlikoSculptureHybrid";
 
 type Variant = "svg" | "gl" | "hybrid";
+type Source = "svg" | "gl";
 
 const STATES: { id: SculptureState; label: string }[] = [
   { id: "aguardando", label: "Aguardando" },
@@ -24,6 +25,15 @@ const VARIANTS: { id: Variant; label: string; note: string }[] = [
   { id: "hybrid", label: "C — Híbrida", note: "Compacta = SVG, expandida = WebGL, crossfade contínuo com a mesma mola do painel." },
 ];
 
+const SOURCE_LABEL: Record<Source, string> = { svg: "SVG (mutação de atributos)", gl: "WebGL (emissão de comandos)" };
+const FRAME_BUDGET_MS = 1000 / 60;
+const SAMPLE_WINDOW_MS = 500;
+
+interface RenderStats {
+  avgMs: number;
+  count: number;
+}
+
 /**
  * Painel de comparação das três variantes da nova Mini Kliko, no
  * Laboratório — exatamente o que foi pedido: "Quero visualizar as
@@ -31,18 +41,34 @@ const VARIANTS: { id: Variant; label: string; note: string }[] = [
  * recursos." Não substitui `MiniKliko.tsx`/`Editor.tsx` — é uma área
  * isolada, só para esta comparação.
  *
- * Mede fps real por amostragem de `requestAnimationFrame` (não
- * presume que WebGL é mais rápido — mostra o número). Para a reação
- * de voz: o microfone só é pedido com um clique explícito aqui
- * (nunca automaticamente), e uma única `MicAmplitudeSession` existe
- * por vez — trocar de variante ou desligar libera o microfone antes
- * de qualquer nova captura.
+ * Três métricas DIFERENTES, de propósito, em vez de um "fps" único:
+ * - **FPS de agendamento**: quantas vezes por segundo o navegador
+ *   despachou um quadro NESTA PÁGINA (medido pelo próprio laço do
+ *   Laboratório, independente da variante). É uma medida de quão
+ *   suave o navegador está conseguindo rodar a aba, não de GPU.
+ * - **Duração média de render (CPU)**: tempo que cada variante gasta
+ *   na MUTAÇÃO DE ATRIBUTOS (SVG) ou na EMISSÃO dos comandos de
+ *   desenho (WebGL — `gl.draw*`, que só enfileira trabalho; a GPU
+ *   executa de forma assíncrona depois). Nunca chamo isso de
+ *   "desempenho da GPU" porque não é isso que está sendo medido.
+ * - **Custo (% do orçamento de 16,6 ms)**: a duração média acima,
+ *   expressa como fração do tempo disponível por quadro a 60 Hz —
+ *   um proxy honesto de "quanto desta variante está comendo da
+ *   margem de cada frame", não uma medição direta de hardware.
+ *
+ * Para a reação de voz: o microfone só é pedido com um clique
+ * explícito aqui (nunca automaticamente), e uma única
+ * `MicAmplitudeSession` existe por vez — trocar de variante ou
+ * desligar libera o microfone antes de qualquer nova captura.
  */
 export function SculptureLabPanel() {
   const [variant, setVariant] = useState<Variant>("hybrid");
   const [sculptureState, setSculptureState] = useState<SculptureState>("aguardando");
   const [expanded, setExpanded] = useState(false);
-  const [fps, setFps] = useState<number | null>(null);
+  const [schedulingFps, setSchedulingFps] = useState<number | null>(null);
+  const [renderStats, setRenderStats] = useState<Partial<Record<Source, RenderStats>>>({});
+
+  const sampleBuffersRef = useRef<Record<Source, number[]>>({ svg: [], gl: [] });
 
   const [micStatus, setMicStatus] = useState<MicAmplitudeStatus>("idle");
   const [micLevel, setMicLevel] = useState(0);
@@ -51,7 +77,7 @@ export function SculptureLabPanel() {
   const [speechLevel, setSpeechLevel] = useState(0);
   const speechSessionRef = useRef<SpeechPulseSession | null>(null);
 
-  // --- medição de fps real, amostrada a cada 500ms, sem presumir nada ---
+  // --- fps de agendamento: medido pelo laço do PRÓPRIO Laboratório, não pelo de nenhuma variante ---
   useEffect(() => {
     let raf: number;
     let frames = 0;
@@ -59,8 +85,8 @@ export function SculptureLabPanel() {
     function tick() {
       frames++;
       const now = performance.now();
-      if (now - windowStart >= 500) {
-        setFps(Math.round((frames * 1000) / (now - windowStart)));
+      if (now - windowStart >= SAMPLE_WINDOW_MS) {
+        setSchedulingFps(Math.round((frames * 1000) / (now - windowStart)));
         frames = 0;
         windowStart = now;
       }
@@ -68,17 +94,50 @@ export function SculptureLabPanel() {
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
+  }, []);
+
+  // --- duração de render por fonte: agregada a cada SAMPLE_WINDOW_MS, não a cada quadro (evita re-render a 60Hz) ---
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const buffers = sampleBuffersRef.current;
+      const next: Partial<Record<Source, RenderStats>> = {};
+      (["svg", "gl"] as Source[]).forEach((src) => {
+        const samples = buffers[src];
+        if (samples.length > 0) {
+          const avgMs = samples.reduce((a, b) => a + b, 0) / samples.length;
+          next[src] = { avgMs, count: samples.length };
+          buffers[src] = [];
+        }
+      });
+      setRenderStats(next);
+    }, SAMPLE_WINDOW_MS);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  // Reseta as amostras ao trocar de variante/estado, para não misturar números de contextos diferentes.
+  useEffect(() => {
+    sampleBuffersRef.current = { svg: [], gl: [] };
+    setRenderStats({});
   }, [variant]);
+
+  function handleFrameStats(source: Source, renderMs: number): void {
+    sampleBuffersRef.current[source].push(renderMs);
+  }
 
   // --- microfone: sessão única, liberada ao trocar de variante/desmontar ---
   useEffect(() => {
+    micSessionRef.current?.stop();
+    micSessionRef.current = null;
+    setMicLevel(0);
+    setMicStatus("idle");
     return () => {
       micSessionRef.current?.stop();
       micSessionRef.current = null;
       speechSessionRef.current?.stop();
       speechSessionRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant]);
 
   function toggleMic(): void {
     if (micStatus === "active" || micStatus === "requesting") {
@@ -144,20 +203,66 @@ export function SculptureLabPanel() {
         {VARIANTS.find((v) => v.id === variant)?.note}
       </p>
 
-      <div style={{ height: 240, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
-        {variant === "svg" && <KlikoSculptureSVG state={sculptureState} size={expanded ? 220 : 110} reactive={reactive} />}
-        {variant === "gl" && <KlikoSculptureGL state={sculptureState} size={expanded ? 220 : 110} reactive={reactive} />}
+      <div
+        data-testid="sculpture-stage"
+        style={{
+          height: 240,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: 14,
+          background: "#0b0d12",
+          borderRadius: 16,
+        }}
+      >
+        {variant === "svg" && (
+          <KlikoSculptureSVG
+            state={sculptureState}
+            size={expanded ? 220 : 110}
+            reactive={reactive}
+            onFrameStats={(s) => handleFrameStats("svg", s.renderMs)}
+          />
+        )}
+        {variant === "gl" && (
+          <KlikoSculptureGL
+            state={sculptureState}
+            size={expanded ? 220 : 110}
+            reactive={reactive}
+            onFrameStats={(s) => handleFrameStats("gl", s.renderMs)}
+          />
+        )}
         {variant === "hybrid" && (
-          <KlikoSculptureHybrid state={sculptureState} reactive={reactive} expanded={expanded} compactSize={110} expandedSize={220} />
+          <KlikoSculptureHybrid
+            state={sculptureState}
+            reactive={reactive}
+            expanded={expanded}
+            compactSize={110}
+            expandedSize={220}
+            onFrameStats={(s) => handleFrameStats(s.source, s.renderMs)}
+          />
         )}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: kliko.textMuted, marginBottom: 14 }}>
-        <span>~{fps ?? "…"} fps nesta variante</span>
-        <span>Resolução interna adaptativa ativa só na variante B/C quando necessário</span>
+      <div style={{ fontSize: 11, color: kliko.textMuted, marginBottom: 4 }}>
+        FPS de agendamento da página: ~{schedulingFps ?? "…"} — quantos quadros o navegador despachou por segundo, não é medida de GPU.
       </div>
+      {(["svg", "gl"] as Source[]).map((src) => {
+        const stats = renderStats[src];
+        if (!stats) return null;
+        const costPct = Math.min(100, Math.round((stats.avgMs / FRAME_BUDGET_MS) * 100));
+        return (
+          <div key={src} style={{ fontSize: 11, color: kliko.textMuted, marginBottom: 4 }}>
+            {SOURCE_LABEL[src]}: {stats.avgMs.toFixed(2)} ms/quadro de CPU · ~{costPct}% do orçamento de 16,6 ms (60 Hz)
+          </div>
+        );
+      })}
+      {!renderStats.svg && !renderStats.gl && (
+        <div style={{ fontSize: 11, color: kliko.textMuted, marginBottom: 4 }}>
+          Duração de render: aguardando a primeira janela de amostragem…
+        </div>
+      )}
 
-      <div style={{ fontSize: 12, fontWeight: 600, color: kliko.textMuted, marginBottom: 6 }}>Estado</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: kliko.textMuted, marginTop: 14, marginBottom: 6 }}>Estado</div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
         {STATES.map((s) => (
           <button
