@@ -2,10 +2,11 @@ import { useRef, useState } from "react";
 import { motion } from "motion/react";
 import { Gallery } from "./screens/Gallery";
 import { Editor } from "./screens/Editor";
+import { Collage } from "./screens/Collage";
 import { Lab } from "./screens/Lab";
 import { kliko, springs } from "./motion/tokens";
 
-type Tab = "galeria" | "editor" | "lab";
+type Tab = "galeria" | "editor" | "colagem" | "lab";
 
 interface PhotoEntry {
   id: string;
@@ -55,6 +56,8 @@ export default function App() {
           </div>
         ))}
 
+      {tab === "colagem" && <Collage onClose={() => setTab("galeria")} />}
+
       {tab === "lab" && <Lab />}
 
       <nav
@@ -73,7 +76,7 @@ export default function App() {
           zIndex: 40,
         }}
       >
-        {(["galeria", "editor", "lab"] as Tab[]).map((t) => (
+        {(["galeria", "editor", "colagem", "lab"] as Tab[]).map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{ background: "none", border: "none", padding: 6 }}>
             <motion.div
               animate={{ color: tab === t ? kliko.blue : kliko.textMuted, scale: tab === t ? 1.05 : 1 }}
