@@ -31,11 +31,22 @@ describe("loadImageBitmapFromFile — tratamento de erros de carregamento", () =
 });
 
 describe("mergeEditState — preserva o que não foi tocado pelo patch", () => {
-  it("mescla um campo global sem afetar os demais nem a camada de céu", () => {
+  it("mescla um campo global sem afetar os demais nem a camada de céu/analógica", () => {
     const next = mergeEditState(DEFAULT_EDIT_STATE, { exposicao: 30 });
     expect(next.exposicao).toBe(30);
     expect(next.contraste).toBe(0);
     expect(next.sky).toEqual(DEFAULT_EDIT_STATE.sky);
+    expect(next.analog).toEqual(DEFAULT_EDIT_STATE.analog);
+  });
+
+  it("mescla parcialmente a camada analógica sem perder os campos não citados", () => {
+    const withPreset = mergeEditState(DEFAULT_EDIT_STATE, {
+      analog: { presetId: "classico", intensity: 100, grain: 22, vignette: 18, fade: 10 },
+    });
+    const next = mergeEditState(withPreset, { analog: { ...withPreset.analog, intensity: 50 } });
+    expect(next.analog.presetId).toBe("classico");
+    expect(next.analog.intensity).toBe(50);
+    expect(next.analog.grain).toBe(22);
   });
 
   it("mescla parcialmente a camada de céu sem perder os campos não citados", () => {

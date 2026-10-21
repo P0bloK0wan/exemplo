@@ -6,6 +6,8 @@ interface GalleryProps {
   thumbnails: { id: string; url: string }[];
   onImportFiles: (files: FileList) => void;
   onSelect: (id: string) => void;
+  /** mensagem de erro real de importação (arquivo corrompido/formato não suportado), se houver */
+  importError?: string | null;
 }
 
 /**
@@ -13,7 +15,7 @@ interface GalleryProps {
  * <input type=file accept=image/* capture>, que no Safari do iOS abre
  * o seletor nativo de Fotos/Câmera — nao ha fotos de exemplo fixas.
  */
-export function Gallery({ thumbnails, onImportFiles, onSelect }: GalleryProps) {
+export function Gallery({ thumbnails, onImportFiles, onSelect, importError }: GalleryProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -51,6 +53,10 @@ export function Gallery({ thumbnails, onImportFiles, onSelect }: GalleryProps) {
         style={{ display: "none" }}
         onChange={(e) => e.target.files && onImportFiles(e.target.files)}
       />
+
+      {importError && (
+        <p style={{ fontSize: 12.5, color: kliko.danger, marginBottom: 16, textAlign: "center" }}>{importError}</p>
+      )}
 
       {thumbnails.length === 0 ? (
         <p style={{ fontSize: 13, color: kliko.textMuted, textAlign: "center", marginTop: 40 }}>

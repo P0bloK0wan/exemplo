@@ -5,6 +5,7 @@ import { Editor } from "./screens/Editor";
 import { Collage } from "./screens/Collage";
 import { Lab } from "./screens/Lab";
 import { kliko, springs } from "./motion/tokens";
+import { loadImageBitmapFromFile, KlikoImageLoadError } from "./engine/photoEngine";
 
 type Tab = "galeria" | "editor" | "colagem" | "lab";
 
@@ -18,16 +19,23 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("galeria");
   const [photos, setPhotos] = useState<PhotoEntry[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
   const idCounter = useRef(0);
 
   async function handleImportFiles(files: FileList) {
     const entries: PhotoEntry[] = [];
+    const failures: string[] = [];
     for (const file of Array.from(files)) {
-      const bitmap = await createImageBitmap(file);
-      const url = URL.createObjectURL(file);
-      entries.push({ id: `p${idCounter.current++}`, url, bitmap });
+      try {
+        const bitmap = await loadImageBitmapFromFile(file);
+        const url = URL.createObjectURL(file);
+        entries.push({ id: `p${idCounter.current++}`, url, bitmap });
+      } catch (err) {
+        failures.push(err instanceof KlikoImageLoadError ? err.message : `Não consegui abrir "${file.name}".`);
+      }
     }
     setPhotos((prev) => [...entries, ...prev]);
+    setImportError(failures.length > 0 ? failures.join(" ") : null);
   }
 
   function openPhoto(id: string) {
@@ -44,6 +52,7 @@ export default function App() {
           thumbnails={photos.map((p) => ({ id: p.id, url: p.url }))}
           onImportFiles={handleImportFiles}
           onSelect={openPhoto}
+          importError={importError}
         />
       )}
 

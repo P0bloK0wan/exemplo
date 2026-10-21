@@ -299,13 +299,19 @@ export class KlikoImageLoadError extends Error {
  * suportado pelo Safari, ou vazio lança `KlikoImageLoadError` com uma
  * mensagem em PT-BR, em vez de deixar a Promise rejeitar com um erro
  * de baixo nível do navegador direto na tela do usuário.
+ *
+ * `imageOrientation: "from-image"` faz o navegador respeitar a tag
+ * EXIF de orientação da foto (comum em fotos tiradas na vertical no
+ * iPhone) — sem isso, algumas fotos apareceriam rotacionadas 90°.
+ * Ainda não testado contra arquivos HEIC reais de iPhone num
+ * dispositivo físico (ver README, limitações pendentes de teste).
  */
 export async function loadImageBitmapFromFile(file: File): Promise<ImageBitmap> {
   if (!file || file.size === 0) {
     throw new KlikoImageLoadError("O arquivo selecionado está vazio ou não pôde ser lido.");
   }
   try {
-    return await createImageBitmap(file);
+    return await createImageBitmap(file, { imageOrientation: "from-image" });
   } catch (cause) {
     throw new KlikoImageLoadError(
       "Não consegui abrir essa imagem — o formato pode não ser suportado ou o arquivo pode estar corrompido.",

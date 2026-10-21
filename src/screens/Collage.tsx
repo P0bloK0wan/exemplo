@@ -13,7 +13,7 @@ import {
   type CollageLayout,
   type CollageSlot,
 } from "../engine/collageEngine";
-import { exportCanvasAsPng, KlikoImageLoadError } from "../engine/photoEngine";
+import { exportCanvasAsPng, loadImageBitmapFromFile, KlikoImageLoadError } from "../engine/photoEngine";
 
 interface CollageProps {
   onClose: () => void;
@@ -52,8 +52,7 @@ export function Collage({ onClose }: CollageProps) {
     if (!file || frameIndex === null) return;
     setImportError(null);
     try {
-      if (file.size === 0) throw new KlikoImageLoadError("O arquivo selecionado está vazio ou não pôde ser lido.");
-      const bitmap = await createImageBitmap(file);
+      const bitmap = await loadImageBitmapFromFile(file);
       const id = `cf${idCounterRef.current++}`;
       setPhotos((prev) => new Map(prev).set(id, bitmap));
       setSlots((prev) => assignPhotoToSlot(prev, frameIndex, id));
