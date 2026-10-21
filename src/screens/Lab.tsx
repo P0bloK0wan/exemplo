@@ -3,6 +3,7 @@ import { motion } from "motion/react";
 import { ANIMATION_REGISTRY, type AnimationCategory } from "../motion/registry";
 import { kliko } from "../motion/tokens";
 import { LiveKitTestPanel } from "../components/LiveKitTestPanel";
+import { SculptureLabPanel } from "../components/sculpture/SculptureLabPanel";
 
 const CATEGORY_LABEL: Record<AnimationCategory, string> = {
   orb: "Mini Kliko (orb)",
@@ -89,6 +90,8 @@ export function Lab() {
 {`{ type: "spring", stiffness: ${stiffness}, damping: ${damping}, mass: 0.8 }`}
         </pre>
       </div>
+
+      <SculptureLabPanel />
 
       <LiveKitTestPanel />
 
