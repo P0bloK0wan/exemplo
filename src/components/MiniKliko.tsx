@@ -3,56 +3,52 @@ import { AnimatePresence, motion } from "motion/react";
 import { kliko, springs } from "../motion/tokens";
 import { SmartSlider } from "./SmartSlider";
 import { VoicePicker } from "./VoicePicker";
-import type { AdjustmentValues } from "../engine/photoEngine";
+import { ProcessingLottie } from "./ProcessingLottie";
+import { mergeEditState, type EditState } from "../engine/photoEngine";
+import type { PhotoAnalysis } from "../engine/photoAnalysis";
+import { suggestExposureFix, suggestSkyBoost, suggestHighlightRecovery } from "../engine/ruleSuggestions";
 import { speak, stopSpeaking } from "../engine/voiceEngine";
 
-type KlikoState = "idle" | "listening" | "panel";
+type KlikoState = "idle" | "listening" | "analisando" | "panel";
 
 interface MiniKlikoProps {
-  adjustments: AdjustmentValues;
-  onChange: (next: AdjustmentValues) => void;
+  editState: EditState;
+  /** null enquanto a análise da foto ainda não terminou (ou falhou) */
+  analysis: PhotoAnalysis | null;
+  onProposeDraft: (next: EditState) => void;
   onConfirm: () => void;
-  onUndo: () => void;
+  onCancel: () => void;
+  onReset: () => void;
   /** se false, a Mini Kliko ainda aparece mas sem controles de foto (ex: na Galeria) */
   hasPhoto: boolean;
 }
 
 /**
- * A peca central do Kliko: a nuvem azul flutuante que se TRANSFORMA em
- * painel de edicao, sem nunca sumir e reaparecer como outro elemento.
+ * A peça central do Kliko: a nuvem azul flutuante que se TRANSFORMA em
+ * painel de edição, sem nunca sumir e reaparecer como outro elemento.
  *
- * Tecnica: os dois estados (orb fechado / painel aberto) compartilham o
- * mesmo layoutId ("kliko-shell"). O Motion anima automaticamente
- * posicao, tamanho e border-radius entre os dois — e o equivalente
- * web ao matchedGeometryEffect do SwiftUI (catalogo #5 e #6).
- *
- * Reconhecimento de voz: tenta a Web Speech API real (webkitSpeechRecognition).
- * Quando indisponivel (a maioria dos navegadores fora do Safari/Chrome
- * desktop, ou sem permissao), cai para comandos simulados — e a
- * interface deixa isso visivelmente marcado como "Demonstracao simulada",
- * como exigido.
+ * Fase 2: o painel agora carrega sugestões baseadas em REGRAS
+ * determinísticas sobre o histograma real da foto (ruleSuggestions.ts)
+ * — não é análise multimodal por IA (ver docs/fase2-inteligencia-
+ * fotografica.md). Um breve estado "analisando" com uma animação
+ * Lottie dá tempo de a pessoa perceber que algo real foi calculado,
+ * em vez de o resultado aparecer instantâneo e sem contexto.
  */
-export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }: MiniKlikoProps) {
+export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCancel, onReset, hasPhoto }: MiniKlikoProps) {
   const [state, setState] = useState<KlikoState>("idle");
   const [transcript, setTranscript] = useState("");
   const [isSimulated, setIsSimulated] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
+  const [caveat, setCaveat] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // Espelha `transcript` de forma sincrona. `onresult`/`onend` sao
   // callbacks do SpeechRecognition, nao re-renders do React: se eles
   // lessem o `transcript` do state (via closure), pegariam o valor de
-  // quando foram CRIADOS, nao o mais recente. Essa era exatamente a
-  // dessincronizacao entre transcricao recebida e interpretacao — o
-  // onend rodava interpretCommand() fechado sobre a string vazia que
-  // existia antes do onresult atualizar o state, entao o comando quase
-  // sempre caia em "nada reconhecido". O ref resolve isso por ser
-  // mutavel e lido com o valor atual, nunca uma copia antiga.
+  // quando foram CRIADOS, nao o mais recente. O ref resolve isso por
+  // ser mutavel e lido com o valor atual, nunca uma copia antiga.
   const transcriptRef = useRef("");
-  // Guarda o estado de ajustes de ANTES do ultimo comando de voz, para
-  // que "Cancelar" possa reverter so esse comando — diferente de
-  // "Redefinir tudo", que zera todos os sliders.
-  const previousAdjustmentsRef = useRef<AdjustmentValues>(adjustments);
   const [voiceURI, setVoiceURI] = useState<string | null>(null);
+  const pendingDraftRef = useRef<EditState | null>(null);
 
   const speechSupported =
     typeof window !== "undefined" &&
@@ -69,6 +65,7 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
     }
 
     setSummary(null);
+    setCaveat(null);
     setTranscript("");
     transcriptRef.current = "";
     setState("listening");
@@ -109,7 +106,7 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
   function fallbackToSimulated() {
     setIsSimulated(true);
     // Demonstracao simulada e explicita: nao finge reconhecimento real.
-    const demoPhrase = "deixa essa foto mais iluminada";
+    const demoPhrase = "melhore a iluminação dessa foto";
     let i = 0;
     const timer = setInterval(() => {
       i++;
@@ -124,64 +121,91 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
   }
 
   /**
-   * O fluxo completo pedido: reconhece -> interpreta -> previa real na
-   * foto (via onChange, que ja redesenha o canvas) -> responde por voz
-   * -> pede confirmacao. O usuario confirma (Concluir), ajusta a mao
-   * nos sliders (o painel ja fica aberto com eles), ou cancela
-   * (reverte so este comando, sem mexer no que ja estava antes).
+   * Fluxo: reconhece -> "analisando" (breve, Lottie) -> sugestão por
+   * regras a partir do histograma real -> prévia na foto -> fala a
+   * explicação -> pede confirmação. Nunca chama isso de "a IA viu sua
+   * foto" — a explicação falada é sempre honesta sobre ser regra fixa.
    */
   function applyVoiceCommand(text: string) {
+    setState("analisando");
+
+    // Pequena pausa deliberada (não é um atraso de rede simulado — a
+    // análise real já rodou quando a foto foi carregada; isso só dá
+    // tempo perceptível de a pessoa acompanhar que algo foi calculado,
+    // em vez do resultado trocar instantâneo e sem contexto).
+    setTimeout(() => resolveVoiceCommand(text), 420);
+  }
+
+  function resolveVoiceCommand(text: string) {
     const lower = text.toLowerCase();
-    const before = adjustments;
-    const next = { ...adjustments };
-    let what: string | null = null;
-    let spoken = "";
 
-    if (lower.includes("ilumin") || lower.includes("clar") || lower.includes("expos")) {
-      next.exposicao = Math.min(100, adjustments.exposicao + 25);
-      what = "aumentar a exposição";
-      spoken = "Aumentei a exposição. Quer confirmar, ajustar ou cancelar?";
-    } else if (lower.includes("escur")) {
-      next.exposicao = Math.max(-100, adjustments.exposicao - 25);
-      what = "reduzir a exposição";
-      spoken = "Reduzi a exposição. Quer confirmar, ajustar ou cancelar?";
-    } else if (lower.includes("contraste")) {
-      next.contraste = Math.min(100, adjustments.contraste + 20);
-      what = "aumentar o contraste";
-      spoken = "Aumentei o contraste. Quer confirmar, ajustar ou cancelar?";
-    } else if (lower.includes("satura") || lower.includes("cor")) {
-      next.saturacao = Math.min(100, adjustments.saturacao + 20);
-      what = "aumentar a saturação";
-      spoken = "Aumentei a saturação. Quer confirmar, ajustar ou cancelar?";
-    } else if (lower.includes("quente")) {
-      next.temperatura = Math.min(100, adjustments.temperatura + 25);
-      what = "esquentar a temperatura";
-      spoken = "Esquentei a temperatura da foto. Quer confirmar, ajustar ou cancelar?";
-    } else if (lower.includes("fri")) {
-      next.temperatura = Math.max(-100, adjustments.temperatura - 25);
-      what = "esfriar a temperatura";
-      spoken = "Esfriei a temperatura da foto. Quer confirmar, ajustar ou cancelar?";
-    }
-
-    if (!what) {
-      // Nada reconhecido: nao mexe na foto, nao abre o painel, so avisa
-      // e volta a ouvir — evita um painel confuso com "nada aplicado".
+    if (!analysis) {
       setState("idle");
-      speak("Desculpa, não entendi o pedido. Pode repetir?");
+      speak("Ainda não terminei de analisar essa foto, pode repetir em um instante?", voiceURI);
       return;
     }
 
-    previousAdjustmentsRef.current = before;
-    onChange(next);
-    setSummary(`Entendi: ${what}. Veja o resultado e confirme abaixo.`);
+    let explanation: string;
+    let caveatText: string | undefined;
+    let patch: Partial<EditState> = {};
+
+    if (lower.includes("céu") || lower.includes("ceu")) {
+      const s = suggestSkyBoost(analysis);
+      explanation = s.explanation;
+      caveatText = s.caveat;
+      patch = s.patch;
+    } else if (lower.includes("recupere") || lower.includes("detalhe")) {
+      const s = suggestHighlightRecovery(analysis);
+      explanation = s.explanation;
+      caveatText = s.caveat;
+      patch = s.patch;
+    } else if (lower.includes("ilumin") || lower.includes("clar") || lower.includes("expos") || lower.includes("escur")) {
+      const s = suggestExposureFix(analysis);
+      explanation = s.explanation;
+      caveatText = s.caveat;
+      patch = s.patch;
+    } else if (lower.includes("contraste")) {
+      patch = { contraste: Math.min(100, editState.contraste + 20) };
+      explanation = "Aumentei o contraste em um incremento fixo. Quer confirmar, ajustar ou cancelar?";
+    } else if (lower.includes("satura") || lower.includes("cor")) {
+      patch = { saturacao: Math.min(100, editState.saturacao + 20) };
+      explanation = "Aumentei a saturação em um incremento fixo. Quer confirmar, ajustar ou cancelar?";
+    } else if (lower.includes("quente")) {
+      patch = { temperatura: Math.min(100, editState.temperatura + 25) };
+      explanation = "Esquentei a temperatura da foto em um incremento fixo. Quer confirmar, ajustar ou cancelar?";
+    } else if (lower.includes("fri")) {
+      patch = { temperatura: Math.max(-100, editState.temperatura - 25) };
+      explanation = "Esfriei a temperatura da foto em um incremento fixo. Quer confirmar, ajustar ou cancelar?";
+    } else {
+      setState("idle");
+      speak("Desculpa, não entendi o pedido. Pode repetir?", voiceURI);
+      return;
+    }
+
+    const hasRealChange = Object.keys(patch).length > 0;
+    if (!hasRealChange) {
+      // A regra concluiu que não há nada a fazer (ex.: exposição já
+      // equilibrada, céu não identificado) — informa e volta a ouvir,
+      // sem abrir um painel de confirmação vazio.
+      setState("idle");
+      speak([explanation, caveatText].filter(Boolean).join(" "), voiceURI);
+      return;
+    }
+
+    const next = mergeEditState(editState, patch);
+    pendingDraftRef.current = next;
+    onProposeDraft(next);
+    setSummary(explanation);
+    setCaveat(caveatText ?? null);
     setState("panel");
-    speak(spoken, voiceURI);
+    speak(explanation, voiceURI);
   }
 
   function handleCancel() {
     stopSpeaking();
-    onChange(previousAdjustmentsRef.current);
+    onCancel();
     setSummary(null);
+    setCaveat(null);
     setState("idle");
   }
 
@@ -190,6 +214,26 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
     onConfirm();
     setState("idle");
     setSummary(null);
+    setCaveat(null);
+  }
+
+  function updateSlider(field: "exposicao" | "contraste" | "saturacao" | "temperatura", value: number) {
+    onProposeDraft(mergeEditState(editState, { [field]: value }));
+    if (state !== "panel") setState("panel");
+  }
+
+  function toggleSkyMask() {
+    const nextAtivo = !editState.sky.ativo;
+    onProposeDraft(
+      mergeEditState(editState, {
+        sky: { ativo: nextAtivo, saturacao: nextAtivo ? 30 : 0, exposicao: 0 },
+      }),
+    );
+    if (nextAtivo) {
+      setCaveat(
+        "Máscara de céu experimental: heurística de posição e cor, sem garantia de identificar qualquer céu nem de preservar rostos.",
+      );
+    }
   }
 
   useEffect(() => {
@@ -198,7 +242,8 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
     };
   }, []);
 
-  const collapsed = state === "idle" || state === "listening";
+  const collapsed = state === "idle" || state === "listening" || state === "analisando";
+  const skyConfident = (analysis?.skyMask.confidence ?? 0) >= 0.08;
 
   return (
     <div style={{ position: "fixed", right: 20, bottom: 28, zIndex: 50, display: "flex", flexDirection: "column", alignItems: "flex-end" }}>
@@ -233,16 +278,39 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
                 initial={{ opacity: 0, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.2 }}
-                style={{ fontSize: 13, color: kliko.textMuted, marginBottom: 14, lineHeight: 1.4 }}
+                style={{ fontSize: 13, color: kliko.textMuted, marginBottom: caveat ? 6 : 14, lineHeight: 1.4 }}
               >
                 {summary}
               </motion.p>
             )}
+            {caveat && (
+              <p style={{ fontSize: 11.5, color: kliko.danger, marginBottom: 14, lineHeight: 1.4 }}>⚠ {caveat}</p>
+            )}
 
-            <SmartSlider label="Exposição" value={adjustments.exposicao} onChange={(v) => onChange({ ...adjustments, exposicao: v })} />
-            <SmartSlider label="Contraste" value={adjustments.contraste} onChange={(v) => onChange({ ...adjustments, contraste: v })} />
-            <SmartSlider label="Saturação" value={adjustments.saturacao} onChange={(v) => onChange({ ...adjustments, saturacao: v })} />
-            <SmartSlider label="Temperatura" value={adjustments.temperatura} onChange={(v) => onChange({ ...adjustments, temperatura: v })} />
+            <SmartSlider label="Exposição" value={editState.exposicao} onChange={(v) => updateSlider("exposicao", v)} />
+            <SmartSlider label="Contraste" value={editState.contraste} onChange={(v) => updateSlider("contraste", v)} />
+            <SmartSlider label="Saturação" value={editState.saturacao} onChange={(v) => updateSlider("saturacao", v)} />
+            <SmartSlider label="Temperatura" value={editState.temperatura} onChange={(v) => updateSlider("temperatura", v)} />
+
+            <div style={{ marginTop: 10, marginBottom: 4 }}>
+              <button onClick={toggleSkyMask} style={skyToggleStyle(editState.sky.ativo)} disabled={!skyConfident && !editState.sky.ativo}>
+                {editState.sky.ativo ? "Desativar máscara de céu" : "Testar máscara de céu (experimental)"}
+              </button>
+              {!skyConfident && !editState.sky.ativo && (
+                <p style={{ fontSize: 10.5, color: kliko.textMuted, marginTop: 4 }}>
+                  Não identifiquei uma região de céu com confiança nesta foto.
+                </p>
+              )}
+              {editState.sky.ativo && (
+                <SmartSlider
+                  label="Saturação do céu"
+                  value={editState.sky.saturacao}
+                  min={0}
+                  max={100}
+                  onChange={(v) => onProposeDraft(mergeEditState(editState, { sky: { ...editState.sky, saturacao: v } }))}
+                />
+              )}
+            </div>
 
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
               <button onClick={handleCancel} style={secondaryBtnStyle}>
@@ -255,8 +323,9 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
 
             <button
               onClick={() => {
-                onUndo();
+                onReset();
                 setSummary(null);
+                setCaveat(null);
               }}
               style={resetLinkStyle}
             >
@@ -289,25 +358,29 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
             position: "relative",
           }}
         >
-          <motion.span
-            animate={
-              state === "listening"
-                ? { scale: [1, 1.18, 1], opacity: [0.9, 1, 0.9] }
-                : { scale: [1, 1.05, 1] }
-            }
-            transition={{ duration: state === "listening" ? 0.9 : 2.6, repeat: Infinity, ease: "easeInOut" }}
-            style={{
-              position: "absolute",
-              inset: 6,
-              borderRadius: 999,
-              background: "rgba(255,255,255,0.35)",
-            }}
-          />
+          {state === "analisando" ? (
+            <ProcessingLottie size={64} />
+          ) : (
+            <motion.span
+              animate={
+                state === "listening"
+                  ? { scale: [1, 1.18, 1], opacity: [0.9, 1, 0.9] }
+                  : { scale: [1, 1.05, 1] }
+              }
+              transition={{ duration: state === "listening" ? 0.9 : 2.6, repeat: Infinity, ease: "easeInOut" }}
+              style={{
+                position: "absolute",
+                inset: 6,
+                borderRadius: 999,
+                background: "rgba(255,255,255,0.35)",
+              }}
+            />
+          )}
         </motion.button>
       )}
 
       <AnimatePresence>
-        {state === "listening" && (
+        {(state === "listening" || state === "analisando") && (
           <motion.div
             key="listening-label"
             initial={{ opacity: 0, y: 6 }}
@@ -327,9 +400,11 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
             }}
           >
             <div style={{ color: kliko.blue, fontWeight: 600, marginBottom: 2 }}>
-              Kliko está ouvindo{isSimulated ? " · demonstração simulada" : ""}
+              {state === "analisando"
+                ? "Kliko está analisando o histograma…"
+                : `Kliko está ouvindo${isSimulated ? " · demonstração simulada" : ""}`}
             </div>
-            <div style={{ color: kliko.textMuted, minHeight: 16 }}>{transcript || "…"}</div>
+            {state === "listening" && <div style={{ color: kliko.textMuted, minHeight: 16 }}>{transcript || "…"}</div>}
           </motion.div>
         )}
       </AnimatePresence>
@@ -386,6 +461,20 @@ const resetLinkStyle: CSSProperties = {
   textDecoration: "underline",
   cursor: "pointer",
 };
+
+function skyToggleStyle(active: boolean): CSSProperties {
+  return {
+    width: "100%",
+    padding: "8px 0",
+    borderRadius: 12,
+    border: `1px solid ${active ? kliko.blue : "rgba(0,0,0,0.1)"}`,
+    background: active ? kliko.blueSoft : "transparent",
+    color: active ? kliko.blue : kliko.textMuted,
+    fontWeight: 600,
+    fontSize: 12.5,
+    cursor: "pointer",
+  };
+}
 
 /** Tipos minimos para a Web Speech API (nao padronizada no TS DOM lib). */
 interface SpeechRecognitionEventLike {

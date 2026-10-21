@@ -1,24 +1,26 @@
 import { useEffect, useRef } from "react";
-import { renderAdjustments, type AdjustmentValues } from "../engine/photoEngine";
+import { renderEditState, type EditState } from "../engine/photoEngine";
 
 interface PhotoCanvasProps {
   image: ImageBitmap | null;
-  adjustments: AdjustmentValues;
+  state: EditState;
+  /** máscara de céu já no tamanho da foto (ver buildSkyMaskForCanvas) — recalculada só quando a foto muda, não a cada slider */
+  skyMask?: Float32Array | null;
 }
 
 /**
- * Catalogo #44 "Ajuste aplicado em tempo real": o canvas eh
- * redesenhado a partir do bitmap ORIGINAL a cada mudanca de slider.
- * Nao ha acumulo de filtro sobre filtro — por isso a foto original
- * fica sempre preservada e o resultado eh sempre reproduzivel.
+ * Catálogo #44 "Ajuste aplicado em tempo real": o canvas é
+ * redesenhado a partir do bitmap ORIGINAL a cada mudança de estado.
+ * Não há acúmulo de filtro sobre filtro — por isso a foto original
+ * fica sempre preservada e o resultado é sempre reproduzível.
  */
-export function PhotoCanvas({ image, adjustments }: PhotoCanvasProps) {
+export function PhotoCanvas({ image, state, skyMask }: PhotoCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     if (!image || !canvasRef.current) return;
-    renderAdjustments(canvasRef.current, image, adjustments);
-  }, [image, adjustments]);
+    renderEditState(canvasRef.current, image, state, skyMask);
+  }, [image, state, skyMask]);
 
   return (
     <canvas
