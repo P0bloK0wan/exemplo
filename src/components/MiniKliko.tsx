@@ -36,6 +36,16 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
   const [isSimulated, setIsSimulated] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // Espelha `transcript` de forma sincrona. `onresult`/`onend` sao
+  // callbacks do SpeechRecognition, nao re-renders do React: se eles
+  // lessem o `transcript` do state (via closure), pegariam o valor de
+  // quando foram CRIADOS, nao o mais recente. Essa era exatamente a
+  // dessincronizacao entre transcricao recebida e interpretacao — o
+  // onend rodava interpretCommand() fechado sobre a string vazia que
+  // existia antes do onresult atualizar o state, entao o comando quase
+  // sempre caia em "nada reconhecido". O ref resolve isso por ser
+  // mutavel e lido com o valor atual, nunca uma copia antiga.
+  const transcriptRef = useRef("");
 
   const speechSupported =
     typeof window !== "undefined" &&
@@ -43,8 +53,16 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
 
   function startListening() {
     if (!hasPhoto) return;
+    // Evita duas instancias de reconhecimento rodando ao mesmo tempo
+    // se o usuario tocar o orb de novo enquanto ja esta ouvindo.
+    if (state === "listening") {
+      recognitionRef.current?.stop?.();
+      return;
+    }
+
     setSummary(null);
     setTranscript("");
+    transcriptRef.current = "";
     setState("listening");
 
     if (speechSupported) {
@@ -56,10 +74,19 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
       recog.interimResults = true;
       recog.onresult = (ev: SpeechRecognitionEventLike) => {
         const text = Array.from(ev.results).map((r) => r[0].transcript).join(" ");
+        transcriptRef.current = text;
         setTranscript(text);
       };
-      recog.onerror = () => fallbackToSimulated();
-      recog.onend = () => interpretCommand();
+      recog.onerror = () => {
+        // Se o erro chegar, o onend pode disparar logo em seguida (varia
+        // por navegador) — desarmamos para nao interpretar duas vezes.
+        recog.onend = null;
+        fallbackToSimulated();
+      };
+      recog.onend = () => {
+        // Le sempre o valor mais atual, nunca uma copia antiga.
+        if (transcriptRef.current) applyVoiceCommand(transcriptRef.current);
+      };
       recognitionRef.current = recog;
       try {
         recog.start();
@@ -78,17 +105,14 @@ export function MiniKliko({ adjustments, onChange, onConfirm, onUndo, hasPhoto }
     let i = 0;
     const timer = setInterval(() => {
       i++;
-      setTranscript(demoPhrase.split(" ").slice(0, i).join(" "));
+      const partial = demoPhrase.split(" ").slice(0, i).join(" ");
+      transcriptRef.current = partial;
+      setTranscript(partial);
       if (i >= demoPhrase.split(" ").length) {
         clearInterval(timer);
         setTimeout(() => applyVoiceCommand(demoPhrase), 200);
       }
     }, 140);
-  }
-
-  function interpretCommand() {
-    if (!transcript) return;
-    applyVoiceCommand(transcript);
   }
 
   function applyVoiceCommand(text: string) {
