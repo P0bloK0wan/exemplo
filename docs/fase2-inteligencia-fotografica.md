@@ -1,9 +1,12 @@
 # Fase 2 — Plano técnico: inteligência fotográfica real
 
-> Este documento é **planejamento de arquitetura**, não implementação. Nenhum
-> modelo de IA pago foi integrado ao código. Por instrução explícita, qualquer
-> integração de modelo multimodal pago ou serviço externo só será implementada
-> após apresentação de arquitetura + custos + plano técnico e aprovação.
+> **Status:** as seções [A] (histograma/regiões/clipping), o catálogo de
+> operações (§3), o histórico não destrutivo com desfazer/refazer (§8, §9) e
+> a heurística experimental de máscara de céu (§7.1) estão **implementados**
+> em `src/engine/` (ver README — "O que é real"). As seções que dependem de
+> modelo multimodal pago (§6, §7.2) **continuam apenas planejadas** — nenhuma
+> API paga foi integrada. Ver `docs/pesquisa-precos-ia-multimodal.md` para os
+> preços oficiais já pesquisados.
 
 ## 1. Objetivo
 
@@ -178,18 +181,14 @@ ordem. Isso também é o que viabiliza desfazer/refazer (§9) e o preview (§9).
 
 Por instrução explícita, antes de integrar qualquer modelo pago eu preciso
 apresentar e você aprovar: arquitetura (acima), custo estimado, e plano
-técnico de integração. Sobre custo, preciso ser transparente sobre uma
-limitação desta sessão: as ferramentas de busca na web que uso para confirmar
-preços oficiais em tempo real (`platform.claude.com/docs/.../pricing`,
-`developers.openai.com/api/docs/pricing`) estão temporariamente bloqueadas por
-um limite de uso desta sessão (libera por volta da meia-noite). Para não
-cometer o erro que você já me pediu para evitar — tratar números de
-agregadores de terceiros como se fossem preço oficial — **não vou citar
-valores agora**. Na próxima interação eu confirmo os preços direto nessas
-duas páginas oficiais e te apresento a estimativa de custo por edição
-(considerando: 1 chamada por pedido de voz, imagem reduzida a ~512–768px para
-baixar tokens de entrada, resposta limitada ao JSON estruturado do §6 para
-baixar tokens de saída) antes de qualquer implementação.
+técnico de integração. Os preços oficiais já foram confirmados diretamente
+nas páginas da Anthropic e da OpenAI — ver
+`docs/pesquisa-precos-ia-multimodal.md`. Resumo: mesmo o modelo mais caro
+testado (Claude Opus 5.5 / GPT-6 Astra) sai a poucos centavos de dólar por
+edição, nas premissas assumidas (imagem reduzida a ~768px, resposta limitada
+ao JSON estruturado do §6) — custo não é o fator limitante aqui; qualidade
+da instrução estruturada e latência real são. Continua sem nenhuma API paga
+integrada.
 
 **Plano técnico de integração (estrutura, sem custos ainda):** a chamada ao
 modelo multimodal precisa de uma chave de API — o Kliko hoje é 100%

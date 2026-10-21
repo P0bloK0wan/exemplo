@@ -24,14 +24,18 @@ isso exige streaming de áudio bidirecional de baixa latência — que é
 exatamente o que WebRTC resolve e `SpeechRecognition`/`speechSynthesis` não
 fazem.
 
-**Decisão:** **não adicionar agora.** LiveKit só faz sentido *junto* com um
-modelo de voz em tempo real do lado do servidor (ex.: `gpt-realtime-2.1`, já
-pesquisado anteriormente) — sem um modelo do outro lado da conexão, o
-transporte não tem o que carregar. Como qualquer integração de modelo pago
-exige sua aprovação prévia (custos + arquitetura), LiveKit entra na mesma
-decisão: será avaliado tecnicamente como parte da proposta de voz em tempo
-real, não como biblioteca isolada. Guardunder consideração para quando essa
-aprovação vier.
+**Decisão atualizada (Fase 2 — autorizado e implementado experimentalmente):**
+adicionado `livekit-client` (SDK oficial) como dependência e criado
+`src/engine/liveVoiceEngine.ts` — um módulo de conexão WebRTC isolado, com
+estados de conexão/erro/reconexão, controle de microfone, e um ponto
+preparado (não implementado) para interrupção de resposta. Testável numa
+aba isolada do Laboratório (`LiveKitTestPanel.tsx`), que só se conecta a um
+servidor LiveKit que você mesmo configure e com um token que você mesmo
+gere — nenhuma credencial embutida, nenhum token falso. **Continua sem
+sentido funcional completo sozinho:** não há um modelo de voz do outro lado
+da conexão ainda, então o módulo só prova a infraestrutura de transporte —
+ver §3 do plano técnico da Fase 2. A Mini Kliko continua usando só a Web
+Speech API gratuita no dia a dia; o LiveKit fica isolado no Laboratório.
 
 ## Lottie — animações vetoriais
 
@@ -43,18 +47,20 @@ Adobe After Effects (via plugin Bodymovin) como JSON. Projeto ativo
 uma categoria inteira de "Materiais/Profundidade/Liquid Glass" e algumas
 transições complexas de UI (categoria J do catálogo) que são mais fáceis de
 desenhar visualmente em uma ferramenta de motion design do que descrever em
-spring physics via código. Hoje, 100% das 20 animações essenciais da Fase 1
-são feitas com `motion` (CSS/transform/spring) — nenhuma delas precisa de
-Lottie, porque são todas transformações de forma/posição/opacidade de
-elementos de UI reais (o orbe, os painéis, os sliders), não ilustrações
-desenhadas à mão.
+spring physics via código. Os 4 sliders globais e a transformação orbe↔painel
+continuam sendo 100% `motion` — nenhum deles precisa de Lottie, porque são
+transformações de forma/posição/opacidade de elementos de UI reais, não
+ilustrações desenhadas à mão.
 
-**Decisão:** **não adicionar na Fase 2.** Não há, hoje, nenhuma animação no
-catálogo que exija um ilustrador externo desenhando quadro-a-quadro — todas
-são geometria/física de UI, que `motion` já cobre nativamente e com menos
-peso (sem carregar um player JSON adicional). Reavaliar só se surgir uma
-necessidade concreta de ilustração animada (ex.: um mascote ou ícone
-elaborado) que não seja apenas transformação de um elemento de UI existente.
+**Decisão atualizada (Fase 2 — autorizado e implementado experimentalmente):**
+adicionado `lottie-web` como dependência e criada uma animação vetorial
+**original** (autoria própria, `src/assets/lottie/kliko-processing.json`,
+escrita à mão em JSON Bodymovin — não extraída de nenhum app) para o estado
+"Kliko está analisando o histograma", usado em `ProcessingLottie.tsx` dentro
+da Mini Kliko. É o único lugar que usa Lottie hoje — os 120 itens do catálogo
+continuam sendo `motion` por padrão; Lottie só entra quando a animação é de
+fato uma ilustração (pontos orbitando, não geometria de um elemento de UI
+existente). Respeita `prefers-reduced-motion` (ver `ProcessingLottie.tsx`).
 
 ## Motion (antigo Framer Motion) — já em uso
 
@@ -102,11 +108,11 @@ TypeScript**:
 Nenhum código do OpenJarvis foi copiado; os dois pontos acima são padrões de
 engenharia de software genéricos, não específicos do projeto.
 
-## Resumo das decisões
+## Resumo das decisões (atualizado após autorização da Fase 2)
 
 | Tecnologia | Decisão | Motivo |
 |---|---|---|
-| LiveKit | Não adicionar agora | Só faz sentido com um modelo de voz em tempo real pago, que exige sua aprovação prévia — será avaliado junto |
-| Lottie | Não adicionar | Nenhuma animação do catálogo exige ilustração externa; `motion` já cobre tudo |
-| Motion | Manter e expandir | Já é a base real da Mini Kliko e cobre as necessidades da Fase 2 |
-| OpenJarvis | Não integrar como dependência; usar 2 padrões conceituais (registro de ferramentas, protocolo tipo-MCP) implementados do zero | Incompatível tecnicamente como dependência; útil como padrão de design |
+| LiveKit | **Implementado experimentalmente** (`liveVoiceEngine.ts` + aba de teste no Laboratório), sem credenciais embutidas, sem serviço pago contratado | Infraestrutura de transporte isolada, pronta para quando houver um modelo de voz do outro lado; Web Speech continua sendo o caminho principal |
+| Lottie | **Implementado experimentalmente**: 1 animação vetorial original (`ProcessingLottie.tsx`) para o estado "analisando" | Único caso no catálogo que é ilustração, não geometria de UI — tudo o resto continua `motion` |
+| Motion | Mantido e expandido | Já é a base real da Mini Kliko e cobre as necessidades da Fase 2 |
+| OpenJarvis | Não integrado como dependência; 2 padrões conceituais (catálogo de operações validadas em `editOperations.ts`, protocolo tipo-MCP) implementados do zero em TypeScript | Incompatível tecnicamente como dependência; útil como padrão de design |
