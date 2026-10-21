@@ -1,4 +1,4 @@
-# Kliko — Fase 1 + Fase 2 + Fase 3 (presets analógicos e colagens reais)
+# Kliko — Fase 1 + Fase 2 + Fase 3 + Fase 4 (protótipo visual experimental da nova Mini Kliko)
 
 Este é o início real do Kliko: uma inteligência artificial para fotografia, edição criativa e colagens, com a Mini Kliko (a nuvem azul flutuante) como interface central. Este README está em primeira pessoa porque documenta as escolhas que fiz em cada fase, não um manual genérico — é para você (ou qualquer pessoa que continue o projeto) entender o porquê de cada decisão.
 
@@ -9,7 +9,21 @@ Quatro telas navegáveis por abas, tudo rodando no navegador (testado para Safar
 - **Galeria** — importa fotografias reais do seu iPhone (`<input type="file" accept="image/*">`, que abre o seletor nativo de Fotos/Câmera do iOS). Não há fotos de exemplo fixas: tudo que aparece aqui é o que você importou.
 - **Editor** — mostra a fotografia num canvas e aplica ajustes de **exposição, contraste, saturação e temperatura**, **presets fotográficos analógicos** (granulação, vinheta, desbotamento) e a camada experimental de **máscara de céu**, tudo de verdade, em tempo real, sobre os pixels da imagem, com **desfazer/refazer** reais (botões ↺/↻ no topo) e **análise real de histograma** rodando em segundo plano a cada foto carregada. Segure a foto para comparar com o original.
 - **Colagem** (nova na Fase 3) — Estúdio de Colagem: escolha um layout real, importe uma fotografia por moldura, arraste/pince para reenquadrar, e exporte o resultado como PNG.
-- **Laboratório** — onde você testa as 20 animações essenciais isoladamente, ajusta a física da mola (rigidez/amortecimento) ao vivo, e uma aba experimental para testar a infraestrutura de voz em tempo real (LiveKit).
+- **Laboratório** — onde você testa as 20 animações essenciais isoladamente, ajusta a física da mola (rigidez/amortecimento) ao vivo, uma aba experimental para testar a infraestrutura de voz em tempo real (LiveKit), e agora (Fase 4) o **protótipo comparativo das três propostas visuais da nova Mini Kliko**.
+
+## Fase 4 — protótipo visual experimental da nova Mini Kliko (ainda não substitui a atual)
+
+Isto responde às duas últimas mensagens suas sobre a nova identidade visual. **Nada aqui troca a Mini Kliko do Editor** — é um laboratório isolado, exatamente como você pediu duas vezes ("minha aprovação é para o laboratório visual experimental, não para substituir definitivamente a Mini Kliko atual").
+
+- **Uma única fonte de geometria** (`src/engine/sculptureEngine.ts`): 4 "lóbulos" normalizados (-1..1) cuja posição/raio variam por estado, puro e sem DOM/Canvas/React — é o que garante que a Variante A e a Variante B pareçam "duas representações do mesmo objeto", como você exigiu, em vez de duas criações visuais independentes. Testado isoladamente (10 testes).
+- **Variante A — SVG + Motion** (`src/components/sculpture/KlikoSculptureSVG.tsx`): os lóbulos passam por um filtro "goo" (`feGaussianBlur` + `feColorMatrix` com limiar) usado como máscara de um gradiente — é isso que funde as bordas numa silhueta orgânica contínua, igual à referência, em vez de círculos "crus" sobrepostos. Uma segunda camada com os mesmos lóbulos, sem desfoque, em `mix-blend-mode: multiply`, escurece exatamente onde eles se encontram — a "profundidade nas interseções" pedida, sem matemática extra, só composição SVG/CSS. Anima mutando atributos diretamente por quadro (nunca via re-render do React), e respeita `prefers-reduced-motion` com um único quadro estático.
+- **Variante B — WebGL + shaders** (`src/engine/sculptureGL.ts` + `src/components/sculpture/KlikoSculptureGL.tsx`): não é ray marching 3D de verdade — é um campo implícito 2D de metaballs (kernel de Blinn, soma de `r²/dist²` por lóbulo) com uma normal "falsa" derivada por diferenças centrais do próprio campo, o bastante para luz difusa + Fresnel (brilho de borda) convincentes a um custo mínimo (o canvas tem só algumas centenas de pixels). A sombra na interseção vem do **Laplaciano** do campo (curvatura côncava onde dois lóbulos se encontram) — emerge da geometria, não é pintada à mão. Cai automaticamente para a Variante A se o WebGL não existir, se os shaders não compilarem, ou se o contexto for perdido (`webglcontextlost`/`webglcontextrestored` tratados). Resolução interna adaptativa por **medição real** da duração dos quadros — eu não presumi que WebGL seria mais rápido, meço. Pausa o laço quando o canvas sai da tela (`IntersectionObserver`) e limpa contexto/listeners/observer ao desmontar.
+- **Variante C — híbrida** (`src/components/sculpture/KlikoSculptureHybrid.tsx`): as duas variantes ficam sempre montadas, sobrepostas, e o que alterna é só a opacidade entre elas — nunca um `{condição ? <A/> : <B/>}` que desmontaria uma no meio da transição. A mesma mola que já anima o `layoutId="kliko-shell"` da Mini Kliko atual (`springs.gentle`) coordena o `scale` do invólucro e o crossfade juntos, como um único gesto. Isto é a resposta direta à sua maior prioridade: a escultura nunca "desaparece" para um painel aparecer no lugar — ela se transforma continuamente. Tradeoff documentado: as duas variantes ficam ativas durante toda a transição (de propósito, para não perder a fase/tempo da animação), então o custo combinado deve ser medido no Laboratório, não presumido.
+- **Reação real ao microfone** (`src/engine/micAmplitude.ts`): `getUserMedia` → `AudioContext` → `AnalyserNode` (nunca conectado a `destination`, para não haver eco) → RMS normalizado. Só pedido com clique explícito no botão do Laboratório, nunca sozinho; uma captura por vez; libera tudo (`MediaStreamTrack`s + `AudioContext`) ao parar. Testado com 8 testes, incluindo o bug real que corrigi nesta fase: o código original lia `window.AudioContext`, que falhava silenciosamente no ambiente de teste (Node, sem `window`) — troquei para `globalThis`, que é visível tanto no navegador quanto no `vi.stubGlobal` dos testes.
+- **Pulso de fala honesto** (`src/engine/speechPulse.ts`): a Web Speech API **não expõe a forma de onda** da síntese — o único sinal real é o evento `boundary` (disparado por palavra). Este módulo usa isso para um pulso que decai exponencialmente a cada quadro — sincronizado ao *ritmo* da fala, nunca a fonemas/amplitude real, e nunca alega o contrário na interface. Testado com 6 testes.
+- **Painel de comparação no Laboratório** (`src/components/sculpture/SculptureLabPanel.tsx`): alterna entre as três variantes, testa cada um dos 6 estados (aguardando/ouvindo/pensando/falando/editando/concluindo) e a transição escultura→painel, mostra fps real medido (não estimado) por variante, e tem os botões de teste de microfone real e de fala.
+
+**O que ainda não fiz nesta fase, de propósito:** não subi o componente para `App.tsx` nem o liguei ao estado real de foto/histórico/confirmação do Editor — isso só faz sentido depois que você escolher uma direção. Também não movi as 100 outras animações do catálogo para esta nova escultura — só os 6 estados pedidos.
 
 ## Fase 3 — o que mudou
 
@@ -65,7 +79,8 @@ A interpretação do comando de voz nesta fase é uma correspondência simples d
 | Estúdio de Colagem (layouts, import, reposicionar, ampliar, exportar PNG) | **Real** — ver `collageEngine.ts`; fotos originais preservadas |
 | Mini Kliko criar colagem inteira por voz a partir da Galeria | **Não implementado** — hoje ela só orienta a abrir o Estúdio; a integração cruzada de telas é próximo passo |
 | Editor de vídeo com timeline real | **Não implementado, apenas arquitetura avaliada** (ver seção própria abaixo) |
-| Nova aparência 3D/escultural da Mini Kliko | **Aguardando a imagem de referência** que você mencionou mas não chegou anexada — ver seção própria abaixo |
+| Nova aparência 3D/escultural da Mini Kliko (3 variantes: SVG, WebGL, híbrida) | **Real, só no Laboratório** — protótipo comparativo, não substitui a Mini Kliko do Editor ainda (ver seção Fase 4 acima) |
+| Reação da escultura ao microfone real / pulso de fala por evento | **Real** — `micAmplitude.ts` e `speechPulse.ts`, testados isoladamente |
 
 ## Arquitetura
 
@@ -85,9 +100,13 @@ src/
     ruleSuggestions.ts            # sugestões por regras a partir do histograma (não IA)
     voiceEngine.ts                  # síntese de voz (Web Speech API, gratuito)
     liveVoiceEngine.ts               # infraestrutura experimental LiveKit (sem credenciais embutidas)
+    sculptureEngine.ts                 # geometria pura dos 4 lóbulos, fonte única para SVG/WebGL (Fase 4)
+    micAmplitude.ts                      # amplitude real do microfone via getUserMedia+AnalyserNode (Fase 4)
+    speechPulse.ts                        # pulso visual por evento `boundary` da Web Speech API (Fase 4)
+    sculptureGL.ts                          # shader WebGL de campo implícito (metaballs) (Fase 4)
     __tests__/                        # testes vitest de todos os módulos acima
   components/
-    MiniKliko.tsx    # a esfera/painel — o coração do app (abas Ajustes/Analógico)
+    MiniKliko.tsx    # a esfera/painel — o coração do app (abas Ajustes/Analógico) — NÃO tocado na Fase 4
     SmartSlider.tsx  # slider com preenchimento em tempo real
     PhotoCanvas.tsx  # desenha a foto com o EditState atual
     PresetPicker.tsx    # grade de presets analógicos com prévia real (Fase 3)
@@ -95,6 +114,11 @@ src/
     CollageCanvas.tsx       # área de montagem com gestos de arrastar/ampliar (Fase 3)
     ProcessingLottie.tsx  # animação vetorial original (estado "analisando")
     LiveKitTestPanel.tsx  # UI de teste isolada do LiveKit, só no Laboratório
+    sculpture/
+      KlikoSculptureSVG.tsx    # Variante A — goo filter + Motion (Fase 4)
+      KlikoSculptureGL.tsx       # Variante B — WebGL + fallback automático para SVG (Fase 4)
+      KlikoSculptureHybrid.tsx     # Variante C — crossfade contínuo A↔B (Fase 4)
+      SculptureLabPanel.tsx          # painel de comparação das 3 variantes, só no Laboratório (Fase 4)
   assets/lottie/
     kliko-processing.json  # animação Lottie original, escrita à mão
   screens/
@@ -123,9 +147,9 @@ Para testar no seu iPhone: rode `npm run dev -- --host`, pegue o endereço `http
 
 Não integrei nenhum código dele nesta fase, como combinamos. A análise completa está salva no projeto (`kliko-analise-openjarvis.md`) — a ideia de registro de ferramentas por `ToolRegistry` foi a inspiração direta para o `motion/registry.ts` que criei aqui, mas escrita do zero e sob medida para animação, não para ferramentas de agente de IA.
 
-## Testes automatizados (atualizado na Fase 3)
+## Testes automatizados (atualizado na Fase 4)
 
-`npm run test` roda **78 testes** (vitest), incluindo tudo da Fase 2 (histograma/clipping, histórico não destrutivo, máscara seletiva, downscale, validação de operações, sugestões por regras, erro de carregamento) mais os novos da Fase 3: limites e interpolação por intensidade do catálogo de presets analógicos, não-mutação e determinismo de granulação/vinheta/desbotamento (mesma entrada sempre produz o mesmo resultado — importante para a prévia nunca "tremer"), catálogo de layouts de colagem (frames nunca vazam do canvas), estado das molduras (atribuir/limpar/remapear ao trocar layout, clamping de pan/zoom) e checagem de completude antes de liberar o export. **Importante: isso prova a lógica, não o dispositivo** — build, lint e teste passando não substituem abrir no Safari do iPhone de verdade (câmera, seletor de fotos, permissão de microfone, gesto de pinça real, performance em foto de 12 megapixels, arquivo HEIC real). Ainda não tive essa confirmação sua desta vez.
+`npm run test` roda **102 testes** (vitest): tudo da Fase 2 e Fase 3 (histograma/clipping, histórico não destrutivo, máscara seletiva, downscale, validação de operações, sugestões por regras, erro de carregamento, presets analógicos, colagens) mais os novos da Fase 4 — `sculptureEngine.ts` (10 testes: geometria por estado, interpolação de `panelProgress`, nunca usa `Math.random()`), `micAmplitude.ts` (8 testes: ciclo de status, RMS normalizado, liberação completa de recursos, nunca duas capturas simultâneas) e `speechPulse.ts` (6 testes: pulso decrescente determinístico, nunca duplica o laço de decaimento num segundo `boundary`). **Deliberadamente não escrevi testes automatizados para os componentes visuais** (`KlikoSculptureSVG`/`GL`/`Hybrid`) — eles são DOM/Canvas/WebGL-pesados, e o valor real deles (como ficam na tela, a fluidez da transição) só se verifica olhando, não com asserção; a lógica que os alimenta (o motor puro) é o que está testado. **Importante: isso prova a lógica, não o dispositivo** — build, lint e teste passando não substituem abrir no Safari do iPhone de verdade (câmera, seletor de fotos, permissão de microfone, gesto de pinça real, performance em foto de 12 megapixels, arquivo HEIC real, comportamento de perda de contexto WebGL, bateria real). Ainda não tive essa confirmação sua desta vez.
 
 ## Editor de vídeo com timeline — avaliação de arquitetura (apenas plano, não implementado)
 
@@ -136,18 +160,25 @@ Antes de qualquer linha de código: o Safari no iPhone não tem uma API de expor
 
 Próximo passo real (ainda não feito): testar isoladamente se `VideoEncoder` exporta algo utilizável direto no Safari do iPhone, antes de decidir entre as duas opções. Não implementei nenhum editor de timeline nesta fase, como você pediu.
 
-## Nova aparência da Mini Kliko — aguardando a imagem de referência
+## O que ainda precisa ser testado no seu iPhone (Fase 4 — escultura)
 
-Você mencionou que ia anexar uma imagem (uma escultura fluida/translúcida) como inspiração visual para a nova Mini Kliko, mas ela não chegou junto da sua última mensagem — só o texto chegou. Combinei com os requisitos que você já descreveu (seis estados de movimento, duas apresentações compacta/expandida, física de mola, sem substituir a versão atual sem aprovação), mas ainda não posso propor as três abordagens visuais (SVG vs. Motion vs. WebGL) sem ver a referência — a escolha de técnica depende diretamente da complexidade visual que a imagem pedir. Assim que você reenviar a imagem, retomo esse ponto.
+Nada disto foi confirmado em aparelho físico ainda:
+
+- **Comportamento real de perda/restauração de contexto WebGL** no Safari iOS — tratei o evento `webglcontextlost`/`webglcontextrestored` e caio para a Variante A, mas nunca vi isso disparar de verdade num iPhone (costuma acontecer sob pressão de memória, trocando de app).
+- **Duplo pedido de permissão de microfone**: se você ligar o teste de microfone do Laboratório enquanto o reconhecimento de voz da Mini Kliko também está ativo, o Safari pode pedir permissão duas vezes (são duas capturas de áudio independentes) — documentado como risco, não confirmado.
+- **Medição real de fps/bateria** por variante — o painel mostra o número calculado ao vivo, mas só em dispositivo físico (não no simulador/desktop) esse número reflete o custo real de GPU de um iPhone.
+- **Sensação do crossfade da Variante C** durante o gesto real de expandir o painel — a mola é a mesma já usada no app, mas a composição com o crossfade de duas camadas nunca foi vista fora do navegador de desenvolvimento.
+- **Ritmo do pulso de fala** (`speechPulse.ts`) com as vozes reais disponíveis no Safari iOS — o evento `boundary` dispara em cadências diferentes dependendo da voz escolhida.
+- **`prefers-reduced-motion`** ativado nas Configurações de Acessibilidade do iPhone, confirmando que as três variantes realmente congelam num quadro só.
 
 ## O que falta
 
 - Modelo multimodal real no lugar das sugestões por regras (`ruleSuggestions.ts`) — arquitetura e preços já levantados, aguardando sua aprovação (`docs/fase2-inteligencia-fotografica.md` §10, `docs/pesquisa-precos-ia-multimodal.md`).
 - Segmentação de céu (e de outras regiões) por IA, substituindo a heurística de posição+cor.
 - Um modelo de voz do outro lado da conexão LiveKit — hoje o módulo só prova o transporte.
-- Nova aparência 3D/escultural da Mini Kliko — aguardando a imagem de referência (ver seção acima).
-- Editor de vídeo com timeline real — só avaliação de arquitetura feita até agora (ver seção acima).
+- **Escolher qual das 3 variantes da nova Mini Kliko vai para o app de verdade** — depende do seu teste no iPhone; só depois disso eu subo o componente escolhido para `App.tsx`, preservando o estado de foto/histórico/confirmação do Editor atual.
+- Editor de vídeo com timeline real — só avaliação de arquitetura feita até agora.
 - Mini Kliko criar uma colagem inteira por voz a partir de fotos já na Galeria (hoje ela só indica abrir o Estúdio de Colagem).
 - Slider com thumb 100% controlado por Motion (drag customizado com `dragElastic` para o rubber-band do catálogo) — por ora uso `<input type="range">` nativo por confiabilidade no Safari, com o crescimento do polegar feito em CSS puro.
 - As outras 100 animações do catálogo completo, por prioridade (a planilha já tem a ordem sugerida na coluna "Prioridade").
-- Testar em dispositivo físico (iPhone Safari): performance da análise/máscara/granulação em fotos reais de 12+ megapixels, gesto de pinça real no Estúdio de Colagem, arquivos HEIC, orientação EXIF de fotos verticais.
+- Testar em dispositivo físico (iPhone Safari): performance da análise/máscara/granulação em fotos reais de 12+ megapixels, gesto de pinça real no Estúdio de Colagem, arquivos HEIC, orientação EXIF de fotos verticais, e tudo listado na seção "Fase 4 — escultura" acima.
