@@ -19,7 +19,7 @@
  * máscara exige ler e escrever o `ImageData` pixel a pixel.
  */
 import { analyzeBuffer, upsampleCellAlphaToPixels, ANALYSIS_MAX_DIMENSION, type PhotoAnalysis } from "./photoAnalysis";
-import { applyMaskedAdjustments, computeDownscaledSize, MASK_RENDER_MAX_DIMENSION } from "./pixelOps";
+import { applyMaskedAdjustments, applyAnalogEffects, computeDownscaledSize, MASK_RENDER_MAX_DIMENSION, type AnalogEffects } from "./pixelOps";
 
 /** Canvas de rascunho reaproveitado entre chamadas, para não recriar/realocar a cada frame de slider. */
 let maskScratchCanvas: HTMLCanvasElement | null = null;
@@ -55,6 +55,27 @@ export interface SkyLayer {
 
 export const DEFAULT_SKY_LAYER: SkyLayer = { ativo: false, saturacao: 0, exposicao: 0 };
 
+/**
+ * Camada analógica (Fase 3) — granulação/vinheta/desbotamento, já
+ * resolvidos (ver `analogPresets.ts::buildAnalogApplication`). O
+ * render só lê `grain`/`vignette`/`fade`; `presetId`/`intensity` são
+ * só para a UI saber qual card destacar e recalcular ao arrastar o
+ * slider de intensidade — o motor de render não precisa conhecer o
+ * catálogo de presets.
+ */
+export interface AnalogLayer extends AnalogEffects {
+  presetId: string | null;
+  intensity: number;
+}
+
+export const DEFAULT_ANALOG_LAYER: AnalogLayer = {
+  presetId: null,
+  intensity: 100,
+  grain: 0,
+  vignette: 0,
+  fade: 0,
+};
+
 /** Estado completo e não destrutivo de edição — o que entra/sai do histórico (editHistory.ts). */
 export interface EditState {
   exposicao: number;
@@ -62,11 +83,13 @@ export interface EditState {
   saturacao: number;
   temperatura: number;
   sky: SkyLayer;
+  analog: AnalogLayer;
 }
 
 export const DEFAULT_EDIT_STATE: EditState = {
   ...DEFAULT_ADJUSTMENTS,
   sky: { ...DEFAULT_SKY_LAYER },
+  analog: { ...DEFAULT_ANALOG_LAYER },
 };
 
 export function toAdjustmentValues(state: EditState): AdjustmentValues {
@@ -79,6 +102,7 @@ export function mergeEditState(base: EditState, patch: Partial<EditState>): Edit
     ...base,
     ...patch,
     sky: { ...base.sky, ...(patch.sky ?? {}) },
+    analog: { ...base.analog, ...(patch.analog ?? {}) },
   };
 }
 
@@ -143,6 +167,47 @@ export function renderEditState(
 
   if (state.sky.ativo && skyMaskCache && (state.sky.saturacao !== 0 || state.sky.exposicao !== 0)) {
     applySkyLayer(canvas, ctx, state.sky, skyMaskCache);
+  }
+
+  if (state.analog.grain > 0 || state.analog.vignette > 0 || state.analog.fade > 0) {
+    applyAnalogLayer(canvas, ctx, state.analog);
+  }
+}
+
+/**
+ * Aplica granulação/vinheta/desbotamento sobre o canvas JÁ renderizado
+ * (ajustes globais + céu, se houver) — por isso lê o próprio `canvas`
+ * como fonte, não a imagem original. Mesma estratégia de resolução
+ * limitada de `applySkyLayer` (reaproveita o scratch canvas): numa
+ * foto de 12MP do iPhone, o grão em resolução reduzida e escalado de
+ * volta fica ligeiramente mais suave que grão nativo — limitação
+ * documentada, aceitável pelo ganho de desempenho/memória no Safari.
+ */
+function applyAnalogLayer(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, analog: AnalogLayer): void {
+  const target = computeDownscaledSize(canvas.width, canvas.height, MASK_RENDER_MAX_DIMENSION);
+  const isFullRes = target.width === canvas.width && target.height === canvas.height;
+
+  const scratch = isFullRes ? canvas : getMaskScratchCanvas();
+  let scratchCtx = ctx;
+  if (!isFullRes) {
+    scratch.width = target.width;
+    scratch.height = target.height;
+    const sc = scratch.getContext("2d");
+    if (!sc) return;
+    scratchCtx = sc;
+    scratchCtx.clearRect(0, 0, scratch.width, scratch.height);
+    scratchCtx.drawImage(canvas, 0, 0, scratch.width, scratch.height);
+  }
+
+  const imageData = scratchCtx.getImageData(0, 0, scratch.width, scratch.height);
+  const working = applyAnalogEffects(
+    { width: scratch.width, height: scratch.height, data: imageData.data },
+    { grain: analog.grain, vignette: analog.vignette, fade: analog.fade },
+  );
+  scratchCtx.putImageData(new ImageData(working as Uint8ClampedArray<ArrayBuffer>, scratch.width, scratch.height), 0, 0);
+
+  if (!isFullRes) {
+    ctx.drawImage(scratch, 0, 0, scratch.width, scratch.height, 0, 0, canvas.width, canvas.height);
   }
 }
 
@@ -216,7 +281,7 @@ export function renderAdjustments(
   source: HTMLImageElement | ImageBitmap,
   values: AdjustmentValues,
 ): void {
-  renderEditState(canvas, source, { ...values, sky: { ...DEFAULT_SKY_LAYER } });
+  renderEditState(canvas, source, { ...values, sky: { ...DEFAULT_SKY_LAYER }, analog: { ...DEFAULT_ANALOG_LAYER } });
 }
 
 export class KlikoImageLoadError extends Error {
@@ -298,6 +363,44 @@ export function analyzePhoto(source: HTMLImageElement | ImageBitmap): PhotoAnaly
 /** Gera a máscara de céu já no tamanho real da foto, para usar em renderEditState. */
 export function buildSkyMaskForCanvas(analysis: PhotoAnalysis, canvasWidth: number, canvasHeight: number): Float32Array {
   return upsampleCellAlphaToPixels(analysis.skyMask, canvasWidth, canvasHeight);
+}
+
+/**
+ * Renderiza uma miniatura PEQUENA (recorte central quadrado) com um
+ * conjunto de ajustes + efeitos analógicos aplicados — usado pelo
+ * seletor de presets para mostrar a prévia real de cada preset sobre
+ * a própria fotografia do usuário, nunca um gradiente decorativo.
+ * Como o canvas é minúsculo (ex. 96x96), roda a passagem de pixel
+ * inteira em resolução total sem custo perceptível.
+ */
+export function renderPresetThumbnail(
+  canvas: HTMLCanvasElement,
+  source: HTMLImageElement | ImageBitmap,
+  adjustments: AdjustmentValues,
+  effects: AnalogEffects,
+  size = 96,
+): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  canvas.width = size;
+  canvas.height = size;
+
+  const { w, h } = sourceSize(source);
+  const cropSize = Math.min(w, h);
+  const sx = (w - cropSize) / 2;
+  const sy = (h - cropSize) / 2;
+
+  ctx.save();
+  ctx.clearRect(0, 0, size, size);
+  ctx.filter = buildFilterString(adjustments);
+  ctx.drawImage(source, sx, sy, cropSize, cropSize, 0, 0, size, size);
+  ctx.restore();
+
+  if (effects.grain > 0 || effects.vignette > 0 || effects.fade > 0) {
+    const imageData = ctx.getImageData(0, 0, size, size);
+    const working = applyAnalogEffects({ width: size, height: size, data: imageData.data }, effects);
+    ctx.putImageData(new ImageData(working as Uint8ClampedArray<ArrayBuffer>, size, size), 0, 0);
+  }
 }
 
 /** Exporta o canvas atual (já com os ajustes) como PNG para download. */

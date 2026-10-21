@@ -8,13 +8,18 @@ import { mergeEditState, type EditState } from "../engine/photoEngine";
 import type { PhotoAnalysis } from "../engine/photoAnalysis";
 import { suggestExposureFix, suggestSkyBoost, suggestHighlightRecovery } from "../engine/ruleSuggestions";
 import { speak, stopSpeaking } from "../engine/voiceEngine";
+import { PresetPicker } from "./PresetPicker";
+import { buildAnalogApplication, resolveAdjustmentsForPreset, resolveEffectsForPreset, getAnalogPreset } from "../engine/analogPresets";
 
 type KlikoState = "idle" | "listening" | "analisando" | "panel";
+type PanelTab = "ajustes" | "analogico";
 
 interface MiniKlikoProps {
   editState: EditState;
   /** null enquanto a análise da foto ainda não terminou (ou falhou) */
   analysis: PhotoAnalysis | null;
+  /** imagem original — usada só para gerar as miniaturas reais dos presets analógicos */
+  image: ImageBitmap | null;
   onProposeDraft: (next: EditState) => void;
   onConfirm: () => void;
   onCancel: () => void;
@@ -34,12 +39,13 @@ interface MiniKlikoProps {
  * Lottie dá tempo de a pessoa perceber que algo real foi calculado,
  * em vez de o resultado aparecer instantâneo e sem contexto.
  */
-export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCancel, onReset, hasPhoto }: MiniKlikoProps) {
+export function MiniKliko({ editState, analysis, image, onProposeDraft, onConfirm, onCancel, onReset, hasPhoto }: MiniKlikoProps) {
   const [state, setState] = useState<KlikoState>("idle");
   const [transcript, setTranscript] = useState("");
   const [isSimulated, setIsSimulated] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [caveat, setCaveat] = useState<string | null>(null);
+  const [panelTab, setPanelTab] = useState<PanelTab>("ajustes");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   // Espelha `transcript` de forma sincrona. `onresult`/`onend` sao
   // callbacks do SpeechRecognition, nao re-renders do React: se eles
@@ -176,6 +182,25 @@ export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCa
     } else if (lower.includes("fri")) {
       patch = { temperatura: Math.max(-100, editState.temperatura - 25) };
       explanation = "Esfriei a temperatura da foto em um incremento fixo. Quer confirmar, ajustar ou cancelar?";
+    } else if (lower.includes("filme") || lower.includes("analógic") || lower.includes("analogic") || lower.includes("antig") || lower.includes("retr")) {
+      // Comando de preset analógico: interpretado por palavras-chave fixas
+      // mapeadas a um preset do catálogo — regra fixa, não compreensão
+      // semântica da foto. "contém a palavra X" -> preset Y, sempre o
+      // mesmo resultado para o mesmo pedido.
+      const presetId = lower.includes("preto e branco") || lower.includes("p&b") || lower.includes("p e b") || lower.includes("mono")
+        ? "mono-suave"
+        : lower.includes("frio") || lower.includes("fria")
+          ? "contraste-frio"
+          : lower.includes("quente") || lower.includes("retr")
+            ? "retro-quente"
+            : "classico";
+      const app = buildAnalogApplication(presetId, 100);
+      patch = { ...app.adjustments, analog: app.analog };
+      explanation = `Aplicando o preset "${getAnalogPreset(presetId)?.label}" — uma combinação fixa de ajustes e textura de filme, não uma leitura semântica da foto. Quer confirmar, ajustar a intensidade ou cancelar?`;
+    } else if (lower.includes("colagem") || lower.includes("colage")) {
+      setState("idle");
+      speak("Para montar uma colagem, abra o Estúdio de Colagem na tela inicial — a partir de lá eu já consigo acompanhar o pedido por voz.", voiceURI);
+      return;
     } else {
       setState("idle");
       speak("Desculpa, não entendi o pedido. Pode repetir?", voiceURI);
@@ -197,6 +222,7 @@ export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCa
     onProposeDraft(next);
     setSummary(explanation);
     setCaveat(caveatText ?? null);
+    setPanelTab(patch.analog ? "analogico" : "ajustes");
     setState("panel");
     speak(explanation, voiceURI);
   }
@@ -220,6 +246,30 @@ export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCa
   function updateSlider(field: "exposicao" | "contraste" | "saturacao" | "temperatura", value: number) {
     onProposeDraft(mergeEditState(editState, { [field]: value }));
     if (state !== "panel") setState("panel");
+  }
+
+  function handleSelectPreset(presetId: string | null) {
+    if (presetId === null) {
+      // "Original" — desliga a camada analógica sem tocar nos 4 sliders manuais.
+      onProposeDraft(mergeEditState(editState, { analog: { presetId: null, intensity: 100, grain: 0, vignette: 0, fade: 0 } }));
+      return;
+    }
+    const app = buildAnalogApplication(presetId, editState.analog.presetId === presetId ? editState.analog.intensity : 100);
+    onProposeDraft(mergeEditState(editState, { ...app.adjustments, analog: app.analog }));
+    if (state !== "panel") setState("panel");
+  }
+
+  function handleIntensityChange(intensity: number) {
+    const presetId = editState.analog.presetId;
+    if (!presetId) return;
+    const preset = getAnalogPreset(presetId);
+    if (!preset) return;
+    onProposeDraft(
+      mergeEditState(editState, {
+        ...resolveAdjustmentsForPreset(preset, intensity),
+        analog: { presetId, intensity, ...resolveEffectsForPreset(preset, intensity) },
+      }),
+    );
   }
 
   function toggleSkyMask() {
@@ -273,6 +323,15 @@ export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCa
 
             <VoicePicker selectedURI={voiceURI} onSelect={setVoiceURI} />
 
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <button onClick={() => setPanelTab("ajustes")} style={tabBtnStyle(panelTab === "ajustes")}>
+                Ajustes
+              </button>
+              <button onClick={() => setPanelTab("analogico")} style={tabBtnStyle(panelTab === "analogico")}>
+                Analógico
+              </button>
+            </div>
+
             {summary && (
               <motion.p
                 initial={{ opacity: 0, y: -4 }}
@@ -287,30 +346,52 @@ export function MiniKliko({ editState, analysis, onProposeDraft, onConfirm, onCa
               <p style={{ fontSize: 11.5, color: kliko.danger, marginBottom: 14, lineHeight: 1.4 }}>⚠ {caveat}</p>
             )}
 
-            <SmartSlider label="Exposição" value={editState.exposicao} onChange={(v) => updateSlider("exposicao", v)} />
-            <SmartSlider label="Contraste" value={editState.contraste} onChange={(v) => updateSlider("contraste", v)} />
-            <SmartSlider label="Saturação" value={editState.saturacao} onChange={(v) => updateSlider("saturacao", v)} />
-            <SmartSlider label="Temperatura" value={editState.temperatura} onChange={(v) => updateSlider("temperatura", v)} />
+            {panelTab === "ajustes" && (
+              <>
+                <SmartSlider label="Exposição" value={editState.exposicao} onChange={(v) => updateSlider("exposicao", v)} />
+                <SmartSlider label="Contraste" value={editState.contraste} onChange={(v) => updateSlider("contraste", v)} />
+                <SmartSlider label="Saturação" value={editState.saturacao} onChange={(v) => updateSlider("saturacao", v)} />
+                <SmartSlider label="Temperatura" value={editState.temperatura} onChange={(v) => updateSlider("temperatura", v)} />
 
-            <div style={{ marginTop: 10, marginBottom: 4 }}>
-              <button onClick={toggleSkyMask} style={skyToggleStyle(editState.sky.ativo)} disabled={!skyConfident && !editState.sky.ativo}>
-                {editState.sky.ativo ? "Desativar máscara de céu" : "Testar máscara de céu (experimental)"}
-              </button>
-              {!skyConfident && !editState.sky.ativo && (
-                <p style={{ fontSize: 10.5, color: kliko.textMuted, marginTop: 4 }}>
-                  Não identifiquei uma região de céu com confiança nesta foto.
+                <div style={{ marginTop: 10, marginBottom: 4 }}>
+                  <button onClick={toggleSkyMask} style={skyToggleStyle(editState.sky.ativo)} disabled={!skyConfident && !editState.sky.ativo}>
+                    {editState.sky.ativo ? "Desativar máscara de céu" : "Testar máscara de céu (experimental)"}
+                  </button>
+                  {!skyConfident && !editState.sky.ativo && (
+                    <p style={{ fontSize: 10.5, color: kliko.textMuted, marginTop: 4 }}>
+                      Não identifiquei uma região de céu com confiança nesta foto.
+                    </p>
+                  )}
+                  {editState.sky.ativo && (
+                    <SmartSlider
+                      label="Saturação do céu"
+                      value={editState.sky.saturacao}
+                      min={0}
+                      max={100}
+                      onChange={(v) => onProposeDraft(mergeEditState(editState, { sky: { ...editState.sky, saturacao: v } }))}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+
+            {panelTab === "analogico" && (
+              <>
+                <p style={{ fontSize: 11.5, color: kliko.textMuted, marginBottom: 8 }}>
+                  Prévia real sobre a sua foto — granulação, vinheta e desbotamento são calculados pixel a pixel e aparecem também na exportação.
                 </p>
-              )}
-              {editState.sky.ativo && (
-                <SmartSlider
-                  label="Saturação do céu"
-                  value={editState.sky.saturacao}
-                  min={0}
-                  max={100}
-                  onChange={(v) => onProposeDraft(mergeEditState(editState, { sky: { ...editState.sky, saturacao: v } }))}
-                />
-              )}
-            </div>
+                <PresetPicker image={image} activePresetId={editState.analog.presetId} onSelect={handleSelectPreset} />
+                {editState.analog.presetId && (
+                  <SmartSlider
+                    label="Intensidade do preset"
+                    value={editState.analog.intensity}
+                    min={0}
+                    max={100}
+                    onChange={handleIntensityChange}
+                  />
+                )}
+              </>
+            )}
 
             <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
               <button onClick={handleCancel} style={secondaryBtnStyle}>
@@ -461,6 +542,20 @@ const resetLinkStyle: CSSProperties = {
   textDecoration: "underline",
   cursor: "pointer",
 };
+
+function tabBtnStyle(active: boolean): CSSProperties {
+  return {
+    flex: 1,
+    padding: "7px 0",
+    borderRadius: 10,
+    border: "none",
+    background: active ? kliko.blue : "rgba(0,0,0,0.05)",
+    color: active ? "#fff" : kliko.textMuted,
+    fontWeight: 600,
+    fontSize: 12.5,
+    cursor: "pointer",
+  };
+}
 
 function skyToggleStyle(active: boolean): CSSProperties {
   return {

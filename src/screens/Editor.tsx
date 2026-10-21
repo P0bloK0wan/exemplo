@@ -130,6 +130,7 @@ export function Editor({ photoId, image, onClose }: EditorProps) {
       <MiniKliko
         editState={visibleState}
         analysis={analysis}
+        image={image}
         onProposeDraft={(next) => setHistory((h) => setDraft(h, next))}
         onConfirm={() => setHistory((h) => confirmDraft(h))}
         onCancel={() => setHistory((h) => cancelDraft(h))}
