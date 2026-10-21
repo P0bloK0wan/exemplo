@@ -21,18 +21,30 @@ Sol, Luna) aceitam entrada de imagem — não há uma tabela separada de preço
 por imagem nesses modelos: a imagem é cobrada como parte dos tokens de
 entrada, exatamente como a Anthropic também faz.
 
-## 2. Estimativa de custo por edição de foto — **estimativa minha, não preço oficial**
+## 2. Estimativa de custo por edição de foto — **estimativa minha, não preço oficial, e NÃO MEDIDA**
 
 Isso **não** é um número publicado pelos provedores (eles não publicam
-"preço por análise de foto"). É uma conta que fiz a partir do preço oficial
-por token acima, assumindo o fluxo descrito em
-`docs/fase2-inteligencia-fotografica.md` §6: imagem reduzida (~768px) +
-resumo do histograma em texto + pedido do usuário como entrada; resposta
-limitada ao JSON estruturado do catálogo de operações como saída.
+"preço por análise de foto"), e também **não é uma medição real** — é uma
+conta a partir do preço oficial por token (seção 1, verificado) aplicada a
+uma premissa de quantidade de tokens que eu assumi, sem ter rodado nenhuma
+chamada real contra esses modelos ainda. Tratar isso como "o custo" seria
+assumir um consumo fixo antes de medi-lo, o que você pediu explicitamente
+para não fazer. A tabela abaixo serve só para dar ordem de grandeza — a
+única forma de saber o número real é medir com uma chamada de teste, o que
+exige integrar a API (ainda não autorizado).
 
-Premissas assumidas (não oficiais, meu cálculo):
+Premissas **assumidas, não medidas** (a partir do fluxo descrito em
+`docs/fase2-inteligencia-fotografica.md` §6: imagem reduzida ~768px + resumo
+do histograma em texto + pedido do usuário como entrada; resposta limitada
+ao JSON estruturado do catálogo de operações como saída):
 - ~1.500 tokens de entrada (imagem reduzida + texto do histograma + pedido)
 - ~250 tokens de saída (JSON de operações + frase de explicação)
+
+Se o tamanho real da imagem enviada, o tamanho real do resumo de histograma
+em texto, ou o tamanho real da resposta do modelo divergirem dessas
+premissas — o que é esperado, já que nunca medimos — o custo real muda na
+mesma proporção. Trate a tabela abaixo como ilustrativa, não como
+orçamento.
 
 | Modelo | Custo estimado por edição |
 |---|---|

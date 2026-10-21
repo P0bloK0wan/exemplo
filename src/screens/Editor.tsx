@@ -10,7 +10,7 @@ import {
   type EditState,
 } from "../engine/photoEngine";
 import type { PhotoAnalysis } from "../engine/photoAnalysis";
-import { createHistory, undo, redo, canUndo, canRedo, resetHistory, type HistoryState } from "../engine/editHistory";
+import { createHistory, undo, redo, canUndo, canRedo, resetHistory, confirmDraft, cancelDraft, setDraft, type HistoryState } from "../engine/editHistory";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 interface EditorProps {
@@ -130,9 +130,9 @@ export function Editor({ photoId, image, onClose }: EditorProps) {
       <MiniKliko
         editState={visibleState}
         analysis={analysis}
-        onProposeDraft={(next) => setHistory((h) => ({ ...h, draft: next }))}
-        onConfirm={() => setHistory((h) => (h.draft ? { past: [...h.past, h.present], present: h.draft, future: [], draft: null } : h))}
-        onCancel={() => setHistory((h) => ({ ...h, draft: null }))}
+        onProposeDraft={(next) => setHistory((h) => setDraft(h, next))}
+        onConfirm={() => setHistory((h) => confirmDraft(h))}
+        onCancel={() => setHistory((h) => cancelDraft(h))}
         onReset={() => setHistory((h) => resetHistory(h, DEFAULT_EDIT_STATE))}
         hasPhoto={!!image}
       />

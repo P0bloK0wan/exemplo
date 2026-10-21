@@ -9,6 +9,18 @@
  */
 import type { PixelBuffer } from "./photoAnalysis";
 
+/**
+ * Tamanho máximo (maior lado) em que a passagem de pixel da máscara
+ * seletiva roda. Fotos de iPhone (ex. 4032x3024, 12MP) processadas em
+ * JS pixel a pixel na resolução total travavam a thread principal no
+ * Safari por tempo perceptível e alocavam ~48MB por cópia — isso é o
+ * que a revisão de desempenho da Fase 2 encontrou. A camada de céu é
+ * experimental e sutil, então processar numa versão reduzida e depois
+ * escalar de volta é um custo visual aceitável (perda de nitidez
+ * apenas na própria região ajustada) pela estabilidade ganha.
+ */
+export const MASK_RENDER_MAX_DIMENSION = 1600;
+
 /** Calcula dimensões reduzidas preservando a proporção, para a análise (nunca para o resultado final). */
 export function computeDownscaledSize(
   width: number,
@@ -67,31 +79,51 @@ export function applyMaskedAdjustment(
   op: "saturation" | "exposure",
   amount: number,
 ): Uint8ClampedArray {
+  return applyMaskedAdjustments(buf, alphaMask, [{ op, amount }]);
+}
+
+export interface MaskedOp {
+  op: "saturation" | "exposure";
+  amount: number;
+}
+
+/**
+ * Como `applyMaskedAdjustment`, mas aplica VÁRIAS operações na mesma
+ * passagem por pixel, numa única alocação — usado quando saturação E
+ * exposição seletivas estão ativas ao mesmo tempo, para não alocar um
+ * `Uint8ClampedArray` do tamanho da foto inteira por operação (numa
+ * foto de 12 megapixels do iPhone, cada cópia extra é ~48MB; revisão
+ * de desempenho da Fase 2 encontrou isso causando pressão de memória
+ * no Safari quando a máscara de céu estava ativa).
+ */
+export function applyMaskedAdjustments(buf: PixelBuffer, alphaMask: Float32Array, ops: MaskedOp[]): Uint8ClampedArray {
   const out = new Uint8ClampedArray(buf.data.length);
   const total = buf.width * buf.height;
+  const activeOps = ops.filter((o) => o.amount !== 0);
 
   for (let p = 0; p < total; p++) {
     const i = p * 4;
     const alpha = alphaMask[p] ?? 0;
-    const r = buf.data[i];
-    const g = buf.data[i + 1];
-    const b = buf.data[i + 2];
+    let r = buf.data[i];
+    let g = buf.data[i + 1];
+    let b = buf.data[i + 2];
     const a = buf.data[i + 3];
 
-    if (alpha <= 0) {
-      out[i] = r;
-      out[i + 1] = g;
-      out[i + 2] = b;
-      out[i + 3] = a;
-      continue;
+    if (alpha > 0 && activeOps.length > 0) {
+      let ar = r;
+      let ag = g;
+      let ab = b;
+      for (const { op, amount } of activeOps) {
+        [ar, ag, ab] = op === "saturation" ? adjustSaturationPixel(ar, ag, ab, amount) : adjustExposurePixel(ar, ag, ab, amount);
+      }
+      r = r + (ar - r) * alpha;
+      g = g + (ag - g) * alpha;
+      b = b + (ab - b) * alpha;
     }
 
-    const [ar, ag, ab] =
-      op === "saturation" ? adjustSaturationPixel(r, g, b, amount) : adjustExposurePixel(r, g, b, amount);
-
-    out[i] = r + (ar - r) * alpha;
-    out[i + 1] = g + (ag - g) * alpha;
-    out[i + 2] = b + (ab - b) * alpha;
+    out[i] = r;
+    out[i + 1] = g;
+    out[i + 2] = b;
     out[i + 3] = a;
   }
 

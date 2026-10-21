@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { computeDownscaledSize, applyMaskedAdjustment, adjustSaturationPixel, adjustExposurePixel } from "../pixelOps";
+import {
+  computeDownscaledSize,
+  applyMaskedAdjustment,
+  applyMaskedAdjustments,
+  adjustSaturationPixel,
+  adjustExposurePixel,
+  MASK_RENDER_MAX_DIMENSION,
+} from "../pixelOps";
 import type { PixelBuffer } from "../photoAnalysis";
 
 describe("computeDownscaledSize — tratamento de imagens grandes", () => {
@@ -78,5 +85,42 @@ describe("applyMaskedAdjustment — edição seletiva por máscara", () => {
     const half = applyMaskedAdjustment(buf, maskHalf, "exposure", 100);
     // com alfa 0.5, a mudança deve ser aproximadamente a metade da mudança com alfa 1
     expect(half[0]).toBeCloseTo(full[0] / 2, 0);
+  });
+});
+
+describe("applyMaskedAdjustments — passagem combinada (correção de desempenho/memória da revisão da Fase 2)", () => {
+  function buf1x1(r: number, g: number, b: number): PixelBuffer {
+    return { width: 1, height: 1, data: new Uint8ClampedArray([r, g, b, 255]) };
+  }
+
+  it("produz o MESMO resultado que aplicar saturação e depois exposição sequencialmente, numa única alocação", () => {
+    const buf = buf1x1(80, 140, 200);
+    const mask = new Float32Array([1]);
+
+    const sequential1 = applyMaskedAdjustment(buf, mask, "saturation", 40);
+    const sequential2 = applyMaskedAdjustment({ width: 1, height: 1, data: sequential1 }, mask, "exposure", -20);
+
+    const combined = applyMaskedAdjustments(buf, mask, [
+      { op: "saturation", amount: 40 },
+      { op: "exposure", amount: -20 },
+    ]);
+
+    expect(Array.from(combined)).toEqual(Array.from(sequential2));
+  });
+
+  it("ignora operações com amount 0 sem alterar o pixel", () => {
+    const buf = buf1x1(10, 20, 30);
+    const mask = new Float32Array([1]);
+    const out = applyMaskedAdjustments(buf, mask, [{ op: "saturation", amount: 0 }, { op: "exposure", amount: 0 }]);
+    expect(Array.from(out)).toEqual([10, 20, 30, 255]);
+  });
+});
+
+describe("MASK_RENDER_MAX_DIMENSION — limite de resolução para a passagem de pixel da máscara", () => {
+  it("fotos de 12MP de iPhone (ex. 4032x3024) são reduzidas para dentro do limite antes do processamento pixel a pixel", () => {
+    const r = computeDownscaledSize(4032, 3024, MASK_RENDER_MAX_DIMENSION);
+    expect(Math.max(r.width, r.height)).toBeLessThanOrEqual(MASK_RENDER_MAX_DIMENSION);
+    // a redução evita alocar um Uint8ClampedArray de ~48MB por operação
+    expect(r.width * r.height).toBeLessThan(4032 * 3024);
   });
 });

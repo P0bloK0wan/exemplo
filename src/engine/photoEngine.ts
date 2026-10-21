@@ -19,7 +19,14 @@
  * máscara exige ler e escrever o `ImageData` pixel a pixel.
  */
 import { analyzeBuffer, upsampleCellAlphaToPixels, ANALYSIS_MAX_DIMENSION, type PhotoAnalysis } from "./photoAnalysis";
-import { applyMaskedAdjustment, computeDownscaledSize } from "./pixelOps";
+import { applyMaskedAdjustments, computeDownscaledSize, MASK_RENDER_MAX_DIMENSION } from "./pixelOps";
+
+/** Canvas de rascunho reaproveitado entre chamadas, para não recriar/realocar a cada frame de slider. */
+let maskScratchCanvas: HTMLCanvasElement | null = null;
+function getMaskScratchCanvas(): HTMLCanvasElement {
+  if (!maskScratchCanvas) maskScratchCanvas = document.createElement("canvas");
+  return maskScratchCanvas;
+}
 
 export interface AdjustmentValues {
   /** -100 a 100 */
@@ -135,26 +142,72 @@ export function renderEditState(
   ctx.restore();
 
   if (state.sky.ativo && skyMaskCache && (state.sky.saturacao !== 0 || state.sky.exposicao !== 0)) {
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    let working: Uint8ClampedArray<ArrayBufferLike> = imageData.data;
-    if (state.sky.saturacao !== 0) {
-      working = applyMaskedAdjustment(
-        { width: canvas.width, height: canvas.height, data: working },
-        skyMaskCache,
-        "saturation",
-        state.sky.saturacao,
-      ) as Uint8ClampedArray<ArrayBufferLike>;
-    }
-    if (state.sky.exposicao !== 0) {
-      working = applyMaskedAdjustment(
-        { width: canvas.width, height: canvas.height, data: working },
-        skyMaskCache,
-        "exposure",
-        state.sky.exposicao,
-      ) as Uint8ClampedArray<ArrayBufferLike>;
-    }
-    ctx.putImageData(new ImageData(working as Uint8ClampedArray<ArrayBuffer>, canvas.width, canvas.height), 0, 0);
+    applySkyLayer(canvas, ctx, state.sky, skyMaskCache);
   }
+}
+
+/**
+ * Aplica a camada seletiva de céu numa resolução limitada
+ * (MASK_RENDER_MAX_DIMENSION) para não travar a thread principal nem
+ * alocar múltiplas cópias do tamanho da foto inteira em dispositivos
+ * móveis — ver o comentário em pixelOps.ts. O resultado é escalado de
+ * volta para o tamanho real do canvas.
+ */
+function applySkyLayer(
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  sky: SkyLayer,
+  skyMaskCache: Float32Array,
+): void {
+  const target = computeDownscaledSize(canvas.width, canvas.height, MASK_RENDER_MAX_DIMENSION);
+  const isFullRes = target.width === canvas.width && target.height === canvas.height;
+
+  const scratch = isFullRes ? canvas : getMaskScratchCanvas();
+  let scratchCtx = ctx;
+  if (!isFullRes) {
+    scratch.width = target.width;
+    scratch.height = target.height;
+    const sc = scratch.getContext("2d");
+    if (!sc) return;
+    scratchCtx = sc;
+    scratchCtx.clearRect(0, 0, scratch.width, scratch.height);
+    scratchCtx.drawImage(canvas, 0, 0, scratch.width, scratch.height);
+  }
+
+  const imageData = scratchCtx.getImageData(0, 0, scratch.width, scratch.height);
+  // A máscara foi gerada no tamanho REAL do canvas; quando trabalhamos
+  // numa cópia reduzida, reamostramos a máscara para o mesmo tamanho
+  // reduzido em vez de recalculá-la (ela é barata de reamostrar — é
+  // só indexação por célula da grade original — mas o custo que
+  // importa evitar é o loop de pixel, que já está no tamanho certo).
+  const mask = isFullRes ? skyMaskCache : resampleAlphaMask(skyMaskCache, canvas.width, canvas.height, scratch.width, scratch.height);
+
+  const working = applyMaskedAdjustments(
+    { width: scratch.width, height: scratch.height, data: imageData.data },
+    mask,
+    [
+      { op: "saturation", amount: sky.saturacao },
+      { op: "exposure", amount: sky.exposicao },
+    ],
+  );
+  scratchCtx.putImageData(new ImageData(working as Uint8ClampedArray<ArrayBuffer>, scratch.width, scratch.height), 0, 0);
+
+  if (!isFullRes) {
+    ctx.drawImage(scratch, 0, 0, scratch.width, scratch.height, 0, 0, canvas.width, canvas.height);
+  }
+}
+
+/** Reamostra uma máscara alfa por pixel de um tamanho para outro (nearest-neighbor — suficiente para uma máscara já suave por célula). */
+function resampleAlphaMask(mask: Float32Array, fromW: number, fromH: number, toW: number, toH: number): Float32Array {
+  const out = new Float32Array(toW * toH);
+  for (let y = 0; y < toH; y++) {
+    const sy = Math.min(fromH - 1, Math.floor((y / toH) * fromH));
+    for (let x = 0; x < toW; x++) {
+      const sx = Math.min(fromW - 1, Math.floor((x / toW) * fromW));
+      out[y * toW + x] = mask[sy * fromW + sx] ?? 0;
+    }
+  }
+  return out;
 }
 
 /** Mantido por compatibilidade com código existente — equivalente a renderEditState sem camada de céu. */
